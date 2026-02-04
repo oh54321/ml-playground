@@ -1,0 +1,1 @@
+`docs/paper-list.md` contains some papers to start off with
