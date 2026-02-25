@@ -1,0 +1,32 @@
+5 businesses:
+- More concentrated
+- Started equities
+- Enron collapsed
+- John Arnold
+- Quant research built the business
+- 30 billion
+- One type, one region
+	- US Crude
+	- European Crude
+	- Asian Crude
+- Deeply focused on fundamentals
+- Massive incentives to collaborate
+- Shared interests
+- Centralized platform
+- One team best in class, give them deep risk
+- Deep resources
+- Tailor-made to commodities
+- Deliberate
+- 100 operations, 150 trading, 150 central resources
+- Australian power in Brisbane
+- Always trying to be innovative
+- Bought company for short-term power trading
+- Depth in markets that we trade
+- Where could I fit in:
+	- Central research team
+	- Analyst
+	- Cross-pollinate
+	- Modelling methodologies
+	- 12-month noncompete periods
+- Teams:
+	- 

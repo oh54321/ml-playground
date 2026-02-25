@@ -1,34 +1,13 @@
-from dataclasses import dataclass
 from gymnasium import Env
 import numpy as np
-from typing import List, Union, Tuple
+from typing import List, Tuple
 import torch.nn as nn
 import torch
 from matplotlib.animation import FuncAnimation
 
+from core.environments.gym.trajectory import Trajectory
 from core.environments.gym.display import GameDisplay
 from core.environments.gym.buffer import FrameBuffer
-
-
-@dataclass
-class TrajectoryNode:
-    observation: np.ndarray
-    action: int
-    reward: float
-
-
-class Trajectory:
-    def __init__(self):
-        self.nodes: List[TrajectoryNode] = []
-
-    def add(self, observation: np.ndarray, action: int, reward: float):
-        node = TrajectoryNode(observation, action, reward)
-        self.nodes.append(node)
-
-    def __getitem__(
-        self, index: Union[int, slice]
-    ) -> Union[TrajectoryNode, List[TrajectoryNode]]:
-        return self.nodes[index]
 
 
 class PolicyEnvironment:

@@ -36,6 +36,8 @@ class ResBlock(nn.Module):
 
 
 class ResNet(nn.Module):
+    MAX_PX: int = 255
+
     def __init__(
         self,
         in_channels: int,
@@ -81,7 +83,11 @@ class ResNet(nn.Module):
             nn.Linear(n_linear, n_outputs),
         )
 
+    def _normalize_pixels(self, tensor: torch.Tensor) -> torch.Tensor:
+        return tensor / self.MAX_PX - 0.5
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self._normalize_pixels(x)
         x = self.initial_conv(x)
         for block in self.blocks:
             x = block(x)

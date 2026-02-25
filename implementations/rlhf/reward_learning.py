@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from abc import ABC, abstractmethod
 
+
 class Trajectory(ABC):
     # General class for a trajectory.
     # For a given game, implement a subclass of this class to represent the trajectory.
@@ -20,7 +21,9 @@ class Trajectory(ABC):
 
 
 class HumanComparison:
-    def __init__(self, trajectory_1: Trajectory, trajectory_2: Trajectory, preference: int):
+    def __init__(
+        self, trajectory_1: Trajectory, trajectory_2: Trajectory, preference: int
+    ):
         self.trajectory_1 = trajectory_1
         self.trajectory_2 = trajectory_2
         assert preference in [-1, 0, 1], "Preference must be -1, 0, or 1"
@@ -35,7 +38,9 @@ class RewardModel(nn.Module):
         self.human_comparisons = []
 
     def forward(self, trajectories: list[Trajectory]):
-        trajectory_tensor = torch.stack([trajectory.to_tensor() for trajectory in trajectories])
+        trajectory_tensor = torch.stack(
+            [trajectory.to_tensor() for trajectory in trajectories]
+        )
         return self.model.forward(trajectory_tensor)
 
     def evaluate_trajectory(self, trajectory: Trajectory):
@@ -44,7 +49,9 @@ class RewardModel(nn.Module):
         """
         return self.forward(trajectory).item()
 
-    def calculate_probability_from_two_trajectories(self, human_comparison: HumanComparison):
+    def calculate_probability_from_two_trajectories(
+        self, human_comparison: HumanComparison
+    ):
         """
         Calculate the probability from two trajectories.
         """
@@ -53,10 +60,15 @@ class RewardModel(nn.Module):
         reward_1 = self.evaluate_trajectory(trajectory_1)
         reward_2 = self.evaluate_trajectory(trajectory_2)
         softmax = torch.exp(reward_1) / (torch.exp(reward_1) + torch.exp(reward_2))
-        return self.human_error_probability * 0.5 + (1 - self.human_error_probability) * softmax
+        return (
+            self.human_error_probability * 0.5
+            + (1 - self.human_error_probability) * softmax
+        )
 
     def calculate_loss_from_two_trajectories(self, human_comparison: HumanComparison):
-        prob_prefer_1 = self.calculate_probability_from_two_trajectories(human_comparison)
+        prob_prefer_1 = self.calculate_probability_from_two_trajectories(
+            human_comparison
+        )
         # preference = 1 means mu_1 = 1, mu_2 = 0
         # preference = -1 means mu_1 = 0, mu_2 = 1
         # preference = 0 means mu_1 = mu_2 = 0.5
@@ -77,9 +89,13 @@ class RewardModel(nn.Module):
         trajectory_2.display()
 
         print("\nWhich trajectory do you prefer?")
-        print("Enter 1 for Trajectory 1, 2 for Trajectory 2, or 0 for Tie/No preference.")
+        print(
+            "Enter 1 for Trajectory 1, 2 for Trajectory 2, or 0 for Tie/No preference."
+        )
         response = self.get_human_response()
-        self.human_comparisons.append(HumanComparison(trajectory_1, trajectory_2, response))
+        self.human_comparisons.append(
+            HumanComparison(trajectory_1, trajectory_2, response)
+        )
 
     def get_human_response(self):
         while True:
@@ -92,4 +108,3 @@ class RewardModel(nn.Module):
                 return 0
             else:
                 print("Invalid input. Please enter 1, 2, or 0.")
-
