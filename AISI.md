@@ -1,0 +1,38 @@
+Bottlenecks
+- Theory of change:
+	- Show risk is real
+	- If real: convince politicians
+	- If not real: useful info
+	- US + UK government
+	- Core bottleneck: to a deeply skeptical person, evidence is not strong (theoretical + constructed examples)
+	- Little evidence for propensity
+	- If we claim "AI wants to do x, y, z"
+	- Forecasting is also tricky
+	- Threat modelling
+	- Most threat models are under-nuanced
+	- Details are highly-dependent on threat models
+	- Bad actors vs bad agents
+- **Big:** Interfacing with the real world
+- Examples:
+	- How easy would it be to detect a rogue AI using server telemetry? (CPU usage + data usage)
+- Blue-team red-team game
+	- List of mitigations government can be implement
+- Bad actor threat models:
+	- Long horizon high-intelligence agents
+	- Who want to cause a catastrophe
+	- Coup risk: in scope
+	- Bio misuse: not in scope
+- Bottlenecks
+	- Talent: Ajeya, AI 2027
+	- Know a lot about the world, AIs
+	- Maybe AIs are really good
+	- Automated scenario generation
+	- Can we automate this?
+	- Writing clarity
+	- All in one person
+	- Getting nuanced details
+	- Not that great
+	- Breadth of knowledge
+- Integrated assessment models
+	- Long 
+- Interpersonal interaction
