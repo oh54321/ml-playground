@@ -1,27 +1,7 @@
 import torch
 import numpy as np
 from typing import Tuple
-import abc
-
-
-class State(abc.ABC):
-    @abc.abstractmethod
-    def to_tensor(self) -> torch.Tensor:
-        raise NotImplementedError
-
-    @abc.abstractmethod
-    def copy(self) -> "State":
-        raise NotImplementedError
-
-
-class Game(abc.ABC):
-    @abc.abstractmethod
-    def reset(self, seed: int = None):
-        raise NotImplementedError
-
-    @abc.abstractmethod
-    def step(self, action: int) -> Tuple[State, float, bool, bool]:
-        raise NotImplementedError
+from core.game import Game, State
 
 
 class State2048(State):
@@ -49,10 +29,10 @@ class State2048(State):
         return torch.where(grid > 0, torch.log2(grid), grid)
 
     def __repr__(self) -> str:
-        return f"State(\n{self.grid}\n)"
+        return f"State2048(\n{self.grid}\n)"
 
-    def copy(self) -> "State":
-        return State(grid=self.state.grid.copy())
+    def copy(self) -> "State2048":
+        return State2048(grid=self.state.grid.copy())
 
 
 class Game2048(Game):
@@ -66,7 +46,7 @@ class Game2048(Game):
         self._create_empty_board(self.state.height, self.state.width)
 
     def _create_empty_board(self, height: int = 4, width: int = 4):
-        self.state = State(height, width)
+        self.state = State2048(height, width)
         self.total_score = 0
         self.done = False
         self._add_random_tile()
@@ -78,7 +58,7 @@ class Game2048(Game):
             raise RuntimeError("step() called after game over")
         assert 0 <= action <= 3
         new_grid, reward, moved = self._simulate_move(self.state.grid, action)
-        self.state = State(grid=new_grid)
+        self.state = State2048(grid=new_grid)
         self.total_score += reward
         if moved:
             self._add_random_tile()
