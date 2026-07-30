@@ -1,4 +1,4 @@
-from typing import Iterator, Tuple, Union
+from typing import Iterator, Optional, Tuple, Union
 from collections import OrderedDict
 from dataclasses import dataclass
 import torch
@@ -161,3 +161,37 @@ class ResNet(NetworkAccessorMixin, nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.network(x)
+
+
+class Agent:
+    def __init__(self, network: nn.Module) -> None:
+        self.network = network
+
+    def action_distribution(
+        self, x: torch.Tensor, mask: Optional[torch.Tensor] = None
+    ) -> torch.distributions.Categorical:
+        logits = self.network(x)
+        if mask is not None:
+            logits = logits.masked_fill(~mask, float("-inf"))
+        return torch.distributions.Categorical(logits=logits)
+
+    def sample_action(
+        self, x: torch.Tensor, mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        return self.action_distribution(x, mask=mask).sample()
+
+    def sample_actions(
+        self, x: torch.Tensor, n: int, mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        distribution = self.action_distribution(x, mask=mask)
+        return torch.distributions.Multinomial(
+            total_count=n, logits=distribution.logits
+        ).sample()
+
+    def action_log_probs(
+        self,
+        x: torch.Tensor,
+        actions: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        return self.action_distribution(x, mask=mask).log_prob(actions)
