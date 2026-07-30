@@ -1,8 +1,10 @@
 import torch
 import numpy as np
 from typing import Tuple
+from core.game import Game, State
 
-class State:
+
+class State2048(State):
     def __init__(self, height: int = 4, width: int = 4, grid: np.ndarray = None):
         if grid is not None:
             self.grid = self._validate(grid)
@@ -27,12 +29,13 @@ class State:
         return torch.where(grid > 0, torch.log2(grid), grid)
 
     def __repr__(self) -> str:
-        return f"State(\n{self.grid}\n)"
+        return f"State2048(\n{self.grid}\n)"
 
-    def copy(self) -> "State":
-        return State(grid=self.state.grid.copy())
+    def copy(self) -> "State2048":
+        return State2048(grid=self.state.grid.copy())
 
-class Game:
+
+class Game2048(Game):
     def __init__(self, height: int = 4, width: int = 4, seed: int = None):
         self.rng = np.random.default_rng(seed)
         self._create_empty_board(height, width)
@@ -43,7 +46,7 @@ class Game:
         self._create_empty_board(self.state.height, self.state.width)
 
     def _create_empty_board(self, height: int = 4, width: int = 4):
-        self.state = State(height, width)
+        self.state = State2048(height, width)
         self.total_score = 0
         self.done = False
         self._add_random_tile()
@@ -55,7 +58,7 @@ class Game:
             raise RuntimeError("step() called after game over")
         assert 0 <= action <= 3
         new_grid, reward, moved = self._simulate_move(self.state.grid, action)
-        self.state = State(grid=new_grid)
+        self.state = State2048(grid=new_grid)
         self.total_score += reward
         if moved:
             self._add_random_tile()
@@ -70,7 +73,9 @@ class Game:
                 legal.append(a)
         return legal
 
-    def _simulate_move(self, grid: np.ndarray, action: int) -> Tuple[np.ndarray, int, bool]:
+    def _simulate_move(
+        self, grid: np.ndarray, action: int
+    ) -> Tuple[np.ndarray, int, bool]:
         rotated = np.rot90(grid, k=action)
         new_rows = []
         reward = 0
