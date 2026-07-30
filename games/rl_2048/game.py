@@ -13,6 +13,7 @@ class State(abc.ABC):
     def copy(self) -> "State":
         raise NotImplementedError
 
+
 class Game(abc.ABC):
     @abc.abstractmethod
     def reset(self, seed: int = None):
@@ -21,7 +22,6 @@ class Game(abc.ABC):
     @abc.abstractmethod
     def step(self, action: int) -> Tuple[State, float, bool, bool]:
         raise NotImplementedError
-
 
 
 class State2048(State):
@@ -53,6 +53,7 @@ class State2048(State):
 
     def copy(self) -> "State":
         return State(grid=self.state.grid.copy())
+
 
 class Game2048(Game):
     def __init__(self, height: int = 4, width: int = 4, seed: int = None):
@@ -92,7 +93,9 @@ class Game2048(Game):
                 legal.append(a)
         return legal
 
-    def _simulate_move(self, grid: np.ndarray, action: int) -> Tuple[np.ndarray, int, bool]:
+    def _simulate_move(
+        self, grid: np.ndarray, action: int
+    ) -> Tuple[np.ndarray, int, bool]:
         rotated = np.rot90(grid, k=action)
         new_rows = []
         reward = 0
