@@ -5,7 +5,7 @@ import torch
 
 class State(abc.ABC):
     @abc.abstractmethod
-    def to_tensor(self) `-> torch.Tensor:
+    def to_tensor(self) -> torch.Tensor:
         raise NotImplementedError
 
     @abc.abstractmethod

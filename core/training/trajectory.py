@@ -46,3 +46,25 @@ class Trajectory:
         if isinstance(index, slice):
             return Trajectory(self.steps[index])
         return self.steps[index]
+
+    def rewards(self) -> torch.Tensor:
+        return torch.tensor([step.reward for step in self.steps])
+
+    def states(self) -> torch.Tensor:
+        return torch.stack([step.state for step in self.steps])
+
+    def dones(self) -> torch.Tensor:
+        return torch.tensor([step.done for step in self.steps])
+
+    # next_state is None exactly when the step ended the episode, so these two
+    # let a consumer bootstrap with zero on terminal steps and V(s') elsewhere.
+    def has_next_state(self) -> torch.Tensor:
+        return torch.tensor([step.next_state is not None for step in self.steps])
+
+    def next_states(self) -> torch.Tensor:
+        return torch.stack(
+            [step.next_state for step in self.steps if step.next_state is not None]
+        )
+
+    def actions(self) -> List[int]:
+        return [step.action for step in self.steps]

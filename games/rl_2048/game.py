@@ -14,7 +14,7 @@ class State2048(State):
             self.height, self.width = height, width
 
     def _validate(self, arr: np.ndarray) -> np.ndarray:
-        arr = np.asarray(arr)
+        arr = np.ascontiguousarray(arr)
         if not np.issubdtype(arr.dtype, np.integer):
             if not np.all(np.equal(np.mod(arr, 1), 0)):
                 raise ValueError("grid contains non-integer values")
@@ -23,10 +23,10 @@ class State2048(State):
         assert np.all(mask), f"non-power-of-2 values at {np.argwhere(~mask)}"
         return arr
 
-    # 0 maps to 0, nonzero tiles map to their log2
+    # 0 maps to 0, nonzero tiles map to their log2; shaped (1, height, width)
     def to_tensor(self) -> torch.Tensor:
         grid = torch.tensor(self.grid, dtype=torch.float32)
-        return torch.where(grid > 0, torch.log2(grid), grid)
+        return torch.where(grid > 0, torch.log2(grid), grid).unsqueeze(0)
 
     def __repr__(self) -> str:
         return f"State2048(\n{self.grid}\n)"

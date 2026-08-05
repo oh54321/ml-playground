@@ -69,7 +69,6 @@ class FlattenHead(NetworkAccessorMixin, nn.Module):
     def __init__(
         self,
         in_channels: int,
-        out_channels: int,
         height: int,
         width: int,
         output_dim: int,
@@ -78,14 +77,8 @@ class FlattenHead(NetworkAccessorMixin, nn.Module):
         self.network = nn.Sequential(
             OrderedDict(
                 [
-                    (
-                        "conv",
-                        nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False),
-                    ),
-                    ("batchnorm", nn.BatchNorm2d(out_channels)),
-                    ("relu", nn.ReLU()),
                     ("flatten", nn.Flatten()),
-                    ("linear", nn.Linear(out_channels * height * width, output_dim)),
+                    ("linear", nn.Linear(in_channels * height * width, output_dim)),
                 ]
             )
         )
@@ -102,7 +95,6 @@ class ResNetConfig:
     height: int
     width: int
     output_dim: int
-    head_channels: int = 32
     kernel_size: int = 3
     block_layers: int = 2
     include_batchnorm: bool = True
@@ -142,7 +134,6 @@ class ResNet(NetworkAccessorMixin, nn.Module):
     def create_head(self) -> nn.Module:
         return FlattenHead(
             self.config.n_channels,
-            self.config.head_channels,
             self.config.height,
             self.config.width,
             self.config.output_dim,
@@ -181,12 +172,9 @@ class Agent:
         return self.action_distribution(x, mask=mask).sample()
 
     def sample_actions(
-        self, x: torch.Tensor, n: int, mask: Optional[torch.Tensor] = None
+        self, x: torch.Tensor, mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
-        distribution = self.action_distribution(x, mask=mask)
-        return torch.distributions.Multinomial(
-            total_count=n, logits=distribution.logits
-        ).sample()
+        return self.action_distribution(x, mask=mask).sample()
 
     def action_log_probs(
         self,
