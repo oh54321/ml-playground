@@ -120,8 +120,8 @@ def main() -> None:
         gae_lambda=0.95,
         clip_epsilon=0.2,
         value_coefficient=1e-6,
-        entropy_coefficient=1, # 10
-        update_epochs=50,
+        entropy_coefficient=0.01,
+        update_epochs=10,
         num_policy_rollout=16384,
         max_game_steps=1024,
         mini_batch_size=1024,
@@ -129,17 +129,17 @@ def main() -> None:
         print_moves=False,
         print_timestamps=True,
     )
-    num_outer_iterations = 5
+    num_outer_iterations = 10
     device = select_device()
     torch.manual_seed(ppo_config.seed)
     resnet_config = ResNetConfig(
         in_channels=1,
-        n_channels=4,
-        blocks=1,
+        n_channels=16,
+        blocks=3,
         height=4,
         width=4,
         output_dim=4,
-        head_channels=4,
+        head_channels=16,
         kernel_size=3,
         block_layers=2,
         include_groupnorm=True,
@@ -172,7 +172,7 @@ def main() -> None:
                 scores = []
                 moves = []
                 for game_number in range(1, num_evaluation_games + 1):
-                    evaluation_seed = ppo_config.seed + outer_iteration * num_evaluation_games + game_number
+                    evaluation_seed = ppo_config.seed + game_number
                     trace_path = None
                     if save_evaluation_traces:
                         game_dir = outer_evaluation_dir / f"game_{game_number:02d}"
