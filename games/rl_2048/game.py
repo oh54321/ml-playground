@@ -1,6 +1,8 @@
-import torch
-import numpy as np
 from typing import Tuple
+
+import numpy as np
+import torch
+
 from core.game import Game, State
 
 
@@ -26,18 +28,25 @@ class State2048(State):
     # 0 maps to 0, nonzero tiles map to their log2
     def to_tensor(self) -> torch.Tensor:
         grid = torch.tensor(self.grid, dtype=torch.float32)
-        return torch.where(grid > 0, torch.log2(grid), grid)
+        return torch.where(grid > 0, torch.log2(grid), grid)[None, None, :, :]
 
     def __repr__(self) -> str:
         return f"State2048(\n{self.grid}\n)"
 
     def copy(self) -> "State2048":
-        return State2048(grid=self.state.grid.copy())
+        return State2048(grid=self.grid.copy())
 
 
 class Game2048(Game):
+    ACTION_NAMES = {
+        0: "left",
+        1: "up",
+        2: "right",
+        3: "down",
+    }
+
     def __init__(self, height: int = 4, width: int = 4, seed: int = None):
-        self.rng = np.random.default_rng(seed)
+        super().__init__(seed)
         self._create_empty_board(height, width)
 
     def reset(self, seed: int = None):
@@ -58,12 +67,16 @@ class Game2048(Game):
             raise RuntimeError("step() called after game over")
         assert 0 <= action <= 3
         new_grid, reward, moved = self._simulate_move(self.state.grid, action)
+        new_grid = np.ascontiguousarray(new_grid)
         self.state = State2048(grid=new_grid)
         self.total_score += reward
         if moved:
             self._add_random_tile()
         self.done = self._is_game_over()
         return self.state, reward, self.done, moved
+
+    def current_state(self) -> State:
+        return self.state
 
     def legal_actions(self) -> list:
         legal = []
@@ -72,6 +85,9 @@ class Game2048(Game):
             if moved:
                 legal.append(a)
         return legal
+
+    def action_name(self, action: int) -> str:
+        return self.ACTION_NAMES[action]
 
     def _simulate_move(
         self, grid: np.ndarray, action: int
