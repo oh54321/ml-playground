@@ -36,9 +36,32 @@ class PPOConfig:
     num_policy_rollout: int
     max_game_steps: int
     mini_batch_size: int
+    reward_multiplier: float
+    denominator_epsilon: float
     seed: int
     print_moves: bool
     print_timestamps: bool = True
+
+
+@dataclass(frozen=True)
+class BatchObjectives:
+    policy: torch.Tensor
+    value: torch.Tensor
+    negative_entropy: torch.Tensor
+    approximate_kl: torch.Tensor
+    outside_clip_range: torch.Tensor
+    value_error: torch.Tensor
+    value_target: torch.Tensor
+
+
+@dataclass(frozen=True)
+class EpochStatistics:
+    policy_loss: float
+    value_loss: float
+    negative_entropy: float
+    approximate_kl: float
+    clip_fraction: float
+    explained_variance: float
 
 
 class PPO():
@@ -60,6 +83,8 @@ class PPO():
         self.max_game_steps = config.max_game_steps
         self.value_coefficient = config.value_coefficient
         self.entropy_coefficient = config.entropy_coefficient
+        self.reward_multiplier = config.reward_multiplier
+        self.denominator_epsilon = config.denominator_epsilon
         self.print_moves = config.print_moves
         self.print_timestamps = config.print_timestamps
 
@@ -115,10 +140,10 @@ class PPO():
                     legal_action_names = ", ".join(game.action_name(legal_action) for legal_action in legal_actions)
                     print(f"Board:\n{state}")
                     print(f"Legal actions: {legal_action_names}; selected action: {game.action_name(action)}")
-                next_state, reward, done, moved = game.step(action)
+                next_state, raw_reward, done, moved = game.step(action)
                 assert moved, "If we selected an action from legal_actions, we should have moved"
                 policy_rollout_information = PolicyRolloutInformation(
-                    state, action, next_state, log_prob, value, reward, done, legal_actions_mask)
+                    state, action, next_state, log_prob, value, raw_reward * self.reward_multiplier, done, legal_actions_mask)
                 current_rollout.append(policy_rollout_information)
                 game_not_over = game_not_over and (not done)
             game.reset(seed=self.rng.integers(0, 100000000))
@@ -146,27 +171,57 @@ class PPO():
         return policy_rollout_information_list, advantage_mean, advantage_std
     
     # Uses policy rollout information on minibatches 
-    def run_epoch(self, policy_rollout_information_list: List[PolicyRolloutInformation], advantage_mean: float, advantage_std: float) -> Tuple[float, float, float]:
+    def run_epoch(
+        self,
+        policy_rollout_information_list: List[PolicyRolloutInformation],
+        advantage_mean: float,
+        advantage_std: float,
+    ) -> EpochStatistics:
         shuffled_rollouts = self.rng.permutation(policy_rollout_information_list)
-        objective_history = []
+        policy_objectives = []
+        value_objectives = []
+        entropy_objectives = []
+        kl_divergences = []
+        outside_ranges = []
+        value_errors = []
+        value_targets = []
         for i in range(0, len(shuffled_rollouts), self.mini_batch_size):
             minibatch = shuffled_rollouts[i : i + self.mini_batch_size]
             self.optimizer.zero_grad()
-            objective_tensor = self._compute_objective(minibatch, advantage_mean, advantage_std)
-            assert len(objective_tensor.shape) == 1 and objective_tensor.shape[0] == 3
-            if len(minibatch) == self.mini_batch_size:
-                objective_history.append(objective_tensor.detach())
-            objective = objective_tensor[0] + self.value_coefficient * objective_tensor[1] + self.entropy_coefficient * objective_tensor[2]
+            objectives = self._compute_objective(minibatch, advantage_mean, advantage_std)
+            policy_objectives.append(objectives.policy.detach())
+            value_objectives.append(objectives.value.detach())
+            entropy_objectives.append(objectives.negative_entropy.detach())
+            kl_divergences.append(objectives.approximate_kl.detach())
+            outside_ranges.append(objectives.outside_clip_range.detach())
+            value_errors.append(objectives.value_error.detach())
+            value_targets.append(objectives.value_target.detach())
+            objective = (
+                objectives.policy
+                + self.value_coefficient * objectives.value
+                + self.entropy_coefficient * objectives.negative_entropy
+            ).mean()
             objective.backward()
             # TODO: consider gradient clipping
             self.optimizer.step()
-        return tuple(torch.stack(objective_history).mean(dim=0).detach().cpu().tolist())
+        return EpochStatistics(
+            policy_loss=torch.cat(policy_objectives).mean().item(),
+            value_loss=torch.cat(value_objectives).mean().item(),
+            negative_entropy=torch.cat(entropy_objectives).mean().item(),
+            approximate_kl=torch.cat(kl_divergences).mean().item(),
+            clip_fraction=torch.cat(outside_ranges).float().mean().item(),
+            explained_variance=1 - torch.cat(value_errors).var().item() /(torch.cat(value_targets).var().item() + self.denominator_epsilon)
+        )
 
-    def _compute_objective(self, steps: List[PolicyRolloutInformation], advantage_mean: float, advantage_std: float) -> torch.Tensor:
+    def _compute_objective(
+        self,
+        steps: List[PolicyRolloutInformation],
+        advantage_mean: float,
+        advantage_std: float,
+    ) -> BatchObjectives:
         # TODO: refactor these list comprehensions into somewhere nice
         advantages = torch.tensor([step.advantage for step in steps], device=self.device(), dtype=self.dtype())
-        # TODO: pass in epsilon to PPO instead of hardcoding here
-        normalized_advantages = (advantages - advantage_mean) / (advantage_std + 1e-8)
+        normalized_advantages = (advantages - advantage_mean) / (advantage_std + self.denominator_epsilon)
         old_policy_log_probs = torch.tensor([step.log_prob for step in steps], device = self.device(), dtype=self.dtype())
         # dimension 0 is the batch dimension
         actor_critic_output: ActorCriticOutput = self.model(torch.cat([self._state_tensor(step.state) for step in steps], dim=0))
@@ -179,17 +234,29 @@ class PPO():
         current_log_prob = log_probs[torch.arange(log_probs.shape[0], device=self.device()), sampled_actions]
         clip_multiplier = torch.where(normalized_advantages > 0, 1 + self.clip_epsilon, 1 - self.clip_epsilon)
         advantage_clip = clip_multiplier * normalized_advantages
-        policy_objective = -torch.minimum(torch.exp(current_log_prob - old_policy_log_probs) * normalized_advantages, advantage_clip)
+        approximate_kl = old_policy_log_probs - current_log_prob
+        probability_ratio = torch.exp(-approximate_kl)
+        policy_objective = -torch.minimum(probability_ratio * normalized_advantages, advantage_clip)
+        outside_clip_range = torch.abs(probability_ratio - 1) > self.clip_epsilon
         values = torch.tensor([step.value for step in steps], device=self.device(), dtype=self.dtype())
         reward_target = advantages + values
-        value_objective = ((reward_target - predicted_values) ** 2)
+        value_error = reward_target - predicted_values
+        value_objective = value_error ** 2
         dist = categorical.Categorical(logits=action_logits)
         entropy_objective = -dist.entropy()
-        return torch.stack([policy_objective, value_objective, entropy_objective]).mean(dim=-1)
+        return BatchObjectives(
+            policy=policy_objective,
+            value=value_objective,
+            negative_entropy=entropy_objective,
+            approximate_kl=approximate_kl,
+            outside_clip_range=outside_clip_range,
+            value_error=value_error,
+            value_target=reward_target
+        )
 
     # Outer iteration loop of PPO
     # Collects the policy rollout, then runs epochs reusing the rollout information
-    def run_outer_iteration(self, game: Game) -> List[Tuple[float, float, float]]:
+    def run_outer_iteration(self, game: Game) -> List[EpochStatistics]:
         self._print_timestamp("Outer iteration starting; collecting rollouts.")
         policy_rollout_information_list, advantage_mean, advantage_std = self.collect_information(game)
         self._print_timestamp("Rollouts collected; starting PPO updates.")

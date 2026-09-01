@@ -1,5 +1,6 @@
-from algorithms.ppo import PPO, PPOConfig
+from algorithms.ppo import EpochStatistics, PPO, PPOConfig
 from contextlib import redirect_stdout
+from dataclasses import asdict
 from games.rl_2048.agent import ResNet, ResNetConfig
 from datetime import datetime
 import io
@@ -40,10 +41,17 @@ def _sparkline(values: list[float]) -> str:
     return "".join(blocks[round((value - low) / (high - low) * (len(blocks) - 1))] for value in values)
 
 
-def print_loss_curves(epoch_stats: list[tuple[float, float, float]]) -> None:
-    names = ("policy loss", "value loss", "negative entropy")
-    for index, name in enumerate(names):
-        values = [stats[index] for stats in epoch_stats]
+def print_loss_curves(epoch_stats: list[EpochStatistics]) -> None:
+    metrics = (
+        ("policy loss", "policy_loss"),
+        ("value loss", "value_loss"),
+        ("negative entropy", "negative_entropy"),
+        ("approximate KL", "approximate_kl"),
+        ("clip fraction", "clip_fraction"),
+        ("explained variance", "explained_variance"),
+    )
+    for name, attribute in metrics:
+        values = [getattr(stats, attribute) for stats in epoch_stats]
         formatted_values = ", ".join(f"{value:.4f}" for value in values)
         print(f"  {name:>16}: {_sparkline(values)}  [{formatted_values}]")
 
@@ -60,6 +68,35 @@ def print_timestamp(message: str, enabled: bool) -> None:
     if enabled:
         timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
         print(f"[{timestamp}] {message}")
+
+
+def save_checkpoint(
+    output_path: Path,
+    model: ResNet,
+    optimizer: optim.Optimizer,
+    ppo_config: PPOConfig,
+    resnet_config: ResNetConfig,
+    outer_iteration: int,
+    mean_score: float,
+    median_score: float,
+    mean_moves: float,
+) -> None:
+    """Save everything needed to inspect or resume the best evaluated policy."""
+    torch.save(
+        {
+            "outer_iteration": outer_iteration,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "ppo_config": asdict(ppo_config),
+            "resnet_config": asdict(resnet_config),
+            "evaluation": {
+                "mean_score": mean_score,
+                "median_score": median_score,
+                "mean_moves": mean_moves,
+            },
+        },
+        output_path,
+    )
 
 
 @torch.no_grad()
@@ -119,13 +156,15 @@ def main() -> None:
         gamma=0.99,
         gae_lambda=0.95,
         clip_epsilon=0.2,
-        value_coefficient=1e-6,
+        value_coefficient=0.1,
         entropy_coefficient=0.01,
         update_epochs=10,
         num_policy_rollout=16384,
         max_game_steps=1024,
         mini_batch_size=1024,
         seed=12345,
+        reward_multiplier=0.01,
+        denominator_epsilon=1e-8,
         print_moves=False,
         print_timestamps=True,
     )
@@ -149,8 +188,10 @@ def main() -> None:
     ppo = PPO(model, optimizer, ppo_config)
     game = Game2048(seed=ppo_config.seed)
     evaluation_output_dir = Path("artifacts") / "ppo_2048"
+    checkpoint_path = evaluation_output_dir / "best.pt"
     num_evaluation_games = 100
     save_evaluation_traces = False
+    best_mean_score = float("-inf")
     evaluation_output_dir.mkdir(parents=True, exist_ok=True)
     run_summary_path = evaluation_output_dir / "summary.txt"
     run_summary_path.write_text("PPO 2048 evaluation summary\n\n", encoding="utf-8")
@@ -186,6 +227,20 @@ def main() -> None:
                 mean_score = sum(scores) / len(scores)
                 median_score = median(scores)
                 mean_moves = sum(moves) / len(moves)
+                if mean_score > best_mean_score:
+                    best_mean_score = mean_score
+                    save_checkpoint(
+                        checkpoint_path,
+                        model,
+                        optimizer,
+                        ppo_config,
+                        resnet_config,
+                        outer_iteration,
+                        mean_score,
+                        median_score,
+                        mean_moves,
+                    )
+                    print(f"  Saved new best checkpoint: {checkpoint_path}")
                 summary = (
                     f"Outer iteration {outer_iteration}\n"
                     f"Mean score: {mean_score:.1f}\n"
