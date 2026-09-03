@@ -1,7 +1,7 @@
 import dataclasses
 from dataclasses import dataclass
 from datetime import datetime
-from typing import List, Tuple
+from typing import List, Literal, Tuple
 
 import numpy as np
 import torch
@@ -37,6 +37,7 @@ class PPOConfig:
     max_game_steps: int
     mini_batch_size: int
     reward_multiplier: float
+    value_transform: Literal["identity", "signed_log1p"]
     denominator_epsilon: float
     seed: int
     print_moves: bool
@@ -84,9 +85,12 @@ class PPO():
         self.value_coefficient = config.value_coefficient
         self.entropy_coefficient = config.entropy_coefficient
         self.reward_multiplier = config.reward_multiplier
+        self.value_transform = config.value_transform
         self.denominator_epsilon = config.denominator_epsilon
         self.print_moves = config.print_moves
         self.print_timestamps = config.print_timestamps
+        if self.value_transform not in ("identity", "signed_log1p"):
+            raise ValueError(f"Unsupported value transform: {self.value_transform}")
 
     def device(self) -> torch.device:
         return next(self.model.parameters()).device
@@ -96,6 +100,18 @@ class PPO():
 
     def _state_tensor(self, state: State) -> torch.Tensor:
         return state.to_tensor().to(device=self.device(), dtype=self.dtype())
+
+    def _transform_value_target(self, value: torch.Tensor) -> torch.Tensor:
+        """Map raw values to the space predicted by the value head."""
+        if self.value_transform == "identity":
+            return value
+        return torch.sign(value) * torch.log1p(torch.abs(value))
+
+    def _untransform_predicted_value(self, transformed_value: torch.Tensor) -> torch.Tensor:
+        """Map a value-head output back to raw reward units for GAE."""
+        if self.value_transform == "identity":
+            return transformed_value
+        return torch.sign(transformed_value) * torch.expm1(torch.abs(transformed_value))
 
     def _print_timestamp(self, message: str) -> None:
         if self.print_timestamps:
@@ -114,7 +130,7 @@ class PPO():
         tensor_state = self._state_tensor(state)
         actor_critic_output: ActorCriticOutput = self.model(tensor_state)
         action_logits = actor_critic_output.action_logits[0]
-        value = actor_critic_output.value.item()
+        value = self._untransform_predicted_value(actor_critic_output.value).item()
         legal_actions_mask = torch.ones(len(action_logits), dtype=bool, device=action_logits.device)
         legal_actions_mask[legal_actions] = 0
         action_logits = action_logits.masked_fill(legal_actions_mask, -torch.inf)
@@ -156,7 +172,7 @@ class PPO():
                     next_value = current_rollout[t+1].value
                 else:
                     actor_critic_output: ActorCriticOutput = self.model(self._state_tensor(step.next_state))
-                    next_value = actor_critic_output.value.item()
+                    next_value = self._untransform_predicted_value(actor_critic_output.value).item()
                 delta = step.reward + self.gamma * next_value - step.value
                 gae = delta + self.gamma * self.gae_lambda * gae
                 current_rollout[t] = dataclasses.replace(step, advantage=gae)
@@ -226,7 +242,8 @@ class PPO():
         # dimension 0 is the batch dimension
         actor_critic_output: ActorCriticOutput = self.model(torch.cat([self._state_tensor(step.state) for step in steps], dim=0))
         action_logits = actor_critic_output.action_logits
-        predicted_values = actor_critic_output.value
+        transformed_predicted_values = actor_critic_output.value
+        predicted_values = self._untransform_predicted_value(transformed_predicted_values)
         legal_actions_mask = torch.stack([step.legal_actions_mask for step in steps], dim=0)
         action_logits = action_logits.masked_fill(legal_actions_mask, -torch.inf)
         log_probs = F.log_softmax(action_logits, dim=-1)
@@ -239,9 +256,10 @@ class PPO():
         policy_objective = -torch.minimum(probability_ratio * normalized_advantages, advantage_clip)
         outside_clip_range = torch.abs(probability_ratio - 1) > self.clip_epsilon
         values = torch.tensor([step.value for step in steps], device=self.device(), dtype=self.dtype())
-        reward_target = advantages + values
-        value_error = reward_target - predicted_values
-        value_objective = value_error ** 2
+        value_target = advantages + values
+        transformed_value_target = self._transform_value_target(value_target)
+        value_error = value_target - predicted_values
+        value_objective = (transformed_value_target - transformed_predicted_values) ** 2
         dist = categorical.Categorical(logits=action_logits)
         entropy_objective = -dist.entropy()
         return BatchObjectives(
@@ -251,7 +269,7 @@ class PPO():
             approximate_kl=approximate_kl,
             outside_clip_range=outside_clip_range,
             value_error=value_error,
-            value_target=reward_target
+            value_target=value_target
         )
 
     # Outer iteration loop of PPO

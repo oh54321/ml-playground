@@ -153,7 +153,7 @@ def main() -> None:
     #     print_timestamps=True,
     # )
     ppo_config = PPOConfig(
-        gamma=0.99,
+        gamma=1.0,
         gae_lambda=0.95,
         clip_epsilon=0.2,
         value_coefficient=0.1,
@@ -164,11 +164,12 @@ def main() -> None:
         mini_batch_size=1024,
         seed=12345,
         reward_multiplier=0.01,
+        value_transform="identity",
         denominator_epsilon=1e-8,
         print_moves=False,
         print_timestamps=True,
     )
-    num_outer_iterations = 10
+    num_outer_iterations = 15
     device = select_device()
     torch.manual_seed(ppo_config.seed)
     resnet_config = ResNetConfig(
@@ -184,7 +185,7 @@ def main() -> None:
         include_groupnorm=True,
     )
     model = ResNet(resnet_config).to(device)
-    optimizer = optim.AdamW(model.parameters(), lr=0.001)
+    optimizer = optim.Adam(model.parameters(), lr=1e-3)
     ppo = PPO(model, optimizer, ppo_config)
     game = Game2048(seed=ppo_config.seed)
     evaluation_output_dir = Path("artifacts") / "ppo_2048"
