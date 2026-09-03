@@ -1,5 +1,5 @@
 import abc
-from typing import Tuple
+from dataclasses import dataclass
 
 import numpy as np
 import torch
@@ -13,6 +13,14 @@ class State(abc.ABC):
     @abc.abstractmethod
     def copy(self) -> "State":
         raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class StepResult:
+    next_state: State
+    reward: float
+    terminated: bool
+    action_applied: bool
 
 
 class Game(abc.ABC):
@@ -39,5 +47,5 @@ class Game(abc.ABC):
         self.rng = np.random.default_rng(seed)
 
     @abc.abstractmethod
-    def step(self, action: int) -> Tuple[State, float, bool, bool]:
+    def step(self, action: int) -> StepResult:
         raise NotImplementedError

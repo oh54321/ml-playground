@@ -100,8 +100,8 @@ def save_checkpoint(
 
 
 @torch.no_grad()
-def save_completed_game(ppo: PPO, seed: int, output_path: Path | None = None) -> tuple[int, int]:
-    """Play a separate game greedily to completion, optionally saving its raw board trace."""
+def save_completed_game(ppo: PPO, seed: int, output_path: Path | None = None) -> tuple[int, int, str]:
+    """Play a separate game greedily to completion and return its raw board trace."""
     game = Game2048(seed=seed)
     trace = [f"Evaluation game seed: {seed}"]
     steps = 0
@@ -109,17 +109,17 @@ def save_completed_game(ppo: PPO, seed: int, output_path: Path | None = None) ->
     while not game.done:
         state = game.current_state()
         legal_actions = game.legal_actions()
-        action, _, _, _ = ppo.select_action(state, legal_actions, deterministic=True)
-        next_state, reward, done, moved = game.step(action)
-        assert moved, "The policy selected an illegal action during evaluation"
+        decision = ppo.select_action(state, legal_actions, deterministic=True)
+        result = game.step(decision.action)
+        assert result.action_applied, "The policy selected an illegal action during evaluation"
 
         trace.extend(
             [
                 f"Step {steps}",
                 f"Board before move:\n{state}",
                 "Legal actions: " + ", ".join(game.action_name(legal_action) for legal_action in legal_actions),
-                f"Selected action: {game.action_name(action)}",
-                f"Reward: {reward}",
+                f"Selected action: {game.action_name(decision.action)}",
+                f"Reward: {result.reward}",
             ]
         )
         steps += 1
@@ -131,9 +131,10 @@ def save_completed_game(ppo: PPO, seed: int, output_path: Path | None = None) ->
             f"Total steps: {steps}",
         ]
     )
+    trace_text = "\n\n".join(trace) + "\n"
     if output_path is not None:
-        output_path.write_text("\n\n".join(trace) + "\n", encoding="utf-8")
-    return int(game.total_score), steps
+        output_path.write_text(trace_text, encoding="utf-8")
+    return int(game.total_score), steps, trace_text
 
 
 def main() -> None:
@@ -169,7 +170,7 @@ def main() -> None:
         print_moves=False,
         print_timestamps=True,
     )
-    num_outer_iterations = 15
+    num_outer_iterations = 5
     device = select_device()
     torch.manual_seed(ppo_config.seed)
     resnet_config = ResNetConfig(
@@ -213,6 +214,8 @@ def main() -> None:
                 outer_evaluation_dir = evaluation_output_dir / f"outer_iteration_{outer_iteration:04d}"
                 scores = []
                 moves = []
+                worst_game: tuple[int, int, int, str] | None = None
+                best_game: tuple[int, int, int, str] | None = None
                 for game_number in range(1, num_evaluation_games + 1):
                     evaluation_seed = ppo_config.seed + game_number
                     trace_path = None
@@ -220,11 +223,20 @@ def main() -> None:
                         game_dir = outer_evaluation_dir / f"game_{game_number:02d}"
                         game_dir.mkdir(parents=True, exist_ok=True)
                         trace_path = game_dir / "trace.txt"
-                    score, steps = save_completed_game(ppo, evaluation_seed, trace_path)
+                    score, steps, trace_text = save_completed_game(ppo, evaluation_seed, trace_path)
                     scores.append(score)
                     moves.append(steps)
+                    game_result = (score, steps, evaluation_seed, trace_text)
+                    if worst_game is None or score < worst_game[0]:
+                        worst_game = game_result
+                    if best_game is None or score > best_game[0]:
+                        best_game = game_result
 
                 scores.sort()
+                assert worst_game is not None and best_game is not None
+                outer_evaluation_dir.mkdir(parents=True, exist_ok=True)
+                (outer_evaluation_dir / "worst_game.txt").write_text(worst_game[3], encoding="utf-8")
+                (outer_evaluation_dir / "best_game.txt").write_text(best_game[3], encoding="utf-8")
                 mean_score = sum(scores) / len(scores)
                 median_score = median(scores)
                 mean_moves = sum(moves) / len(moves)
@@ -248,7 +260,9 @@ def main() -> None:
                     f"Median score: {median_score:.1f}\n"
                     f"Mean moves: {mean_moves:.1f}\n"
                     f"Raw scores: {scores}\n"
-                    f"Traces: {outer_evaluation_dir if save_evaluation_traces else 'not saved'}\n\n"
+                    f"Best game: score {best_game[0]}, steps {best_game[1]}, seed {best_game[2]}\n"
+                    f"Worst game: score {worst_game[0]}, steps {worst_game[1]}, seed {worst_game[2]}\n"
+                    f"Traces: {outer_evaluation_dir}\n\n"
                 )
                 with run_summary_path.open("a", encoding="utf-8") as summary_file:
                     summary_file.write(summary)
@@ -257,8 +271,11 @@ def main() -> None:
                     f"median score: {median_score:.1f}; mean moves: {mean_moves:.1f}"
                 )
                 print(f"  Evaluation raw scores: {scores}")
-                trace_status = outer_evaluation_dir if save_evaluation_traces else "not saved"
-                print(f"  Evaluation traces: {trace_status}; run summary: {run_summary_path}")
+                print(
+                    f"  Best game: {best_game[0]} points; worst game: {worst_game[0]} points "
+                    f"({outer_evaluation_dir})"
+                )
+                print(f"  Evaluation traces: {outer_evaluation_dir}; run summary: {run_summary_path}")
                 print_timestamp("Evaluation games complete.", ppo_config.print_timestamps)
                 model.train(was_training)
 

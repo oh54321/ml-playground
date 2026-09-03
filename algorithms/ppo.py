@@ -26,6 +26,14 @@ class PolicyRolloutInformation:
 
 
 @dataclass(frozen=True)
+class ActionDecision:
+    action: int
+    log_prob: float
+    value: float
+    illegal_actions_mask: torch.Tensor
+
+
+@dataclass(frozen=True)
 class PPOConfig:
     gamma: float
     gae_lambda: float
@@ -72,25 +80,12 @@ class PPO():
         config: PPOConfig
     ):
         torch.manual_seed(config.seed)
+        self.config = config
         self.model: ResNet = model
         self.optimizer = optimizer
-        self.gamma = config.gamma
-        self.gae_lambda = config.gae_lambda
-        self.clip_epsilon = config.clip_epsilon
-        self.update_epochs = config.update_epochs
-        self.num_policy_rollout = config.num_policy_rollout
-        self.mini_batch_size = config.mini_batch_size
         self.rng = np.random.default_rng(config.seed)
-        self.max_game_steps = config.max_game_steps
-        self.value_coefficient = config.value_coefficient
-        self.entropy_coefficient = config.entropy_coefficient
-        self.reward_multiplier = config.reward_multiplier
-        self.value_transform = config.value_transform
-        self.denominator_epsilon = config.denominator_epsilon
-        self.print_moves = config.print_moves
-        self.print_timestamps = config.print_timestamps
-        if self.value_transform not in ("identity", "signed_log1p"):
-            raise ValueError(f"Unsupported value transform: {self.value_transform}")
+        if self.config.value_transform not in ("identity", "signed_log1p"):
+            raise ValueError(f"Unsupported value transform: {self.config.value_transform}")
 
     def device(self) -> torch.device:
         return next(self.model.parameters()).device
@@ -103,30 +98,28 @@ class PPO():
 
     def _transform_value_target(self, value: torch.Tensor) -> torch.Tensor:
         """Map raw values to the space predicted by the value head."""
-        if self.value_transform == "identity":
+        if self.config.value_transform == "identity":
             return value
         return torch.sign(value) * torch.log1p(torch.abs(value))
 
     def _untransform_predicted_value(self, transformed_value: torch.Tensor) -> torch.Tensor:
         """Map a value-head output back to raw reward units for GAE."""
-        if self.value_transform == "identity":
+        if self.config.value_transform == "identity":
             return transformed_value
         return torch.sign(transformed_value) * torch.expm1(torch.abs(transformed_value))
 
     def _print_timestamp(self, message: str) -> None:
-        if self.print_timestamps:
+        if self.config.print_timestamps:
             timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
             print(f"[{timestamp}] {message}")
 
-    # From the current state and a list of legal actions, return information for the next action
-    # Returns the action itself, the log probability of that action,
-    # the value function from the current state, and a mask for the list of legal actions
+    # From the current state and a list of legal actions, return the next action and its policy metadata.
     def select_action(
         self,
         state: State,
         legal_actions: List[int],
         deterministic: bool = False,
-    ) -> Tuple[int, float, float, torch.Tensor]:
+    ) -> ActionDecision:
         tensor_state = self._state_tensor(state)
         actor_critic_output: ActorCriticOutput = self.model(tensor_state)
         action_logits = actor_critic_output.action_logits[0]
@@ -137,7 +130,12 @@ class PPO():
         categorical_distribution = categorical.Categorical(logits=action_logits)
         action = action_logits.argmax() if deterministic else categorical_distribution.sample()
         log_probability = categorical_distribution.log_prob(action)
-        return action.item(), log_probability.item(), value, legal_actions_mask
+        return ActionDecision(
+            action=action.item(),
+            log_prob=log_probability.item(),
+            value=value,
+            illegal_actions_mask=legal_actions_mask,
+        )
 
     # Runs games until we have the desired amount of policy rollouts.
     # Starts a game from scratch, and continually calls select_action to generate the next state along with its information
@@ -145,23 +143,31 @@ class PPO():
     @torch.no_grad()
     def collect_information(self, game: Game) -> Tuple[List[PolicyRolloutInformation], float, float]:
         policy_rollout_information_list: List[PolicyRolloutInformation] = []
-        while len(policy_rollout_information_list) < self.num_policy_rollout:
+        while len(policy_rollout_information_list) < self.config.num_policy_rollout:
             current_rollout: List[PolicyRolloutInformation] = []
             game_not_over = True
-            while len(current_rollout) < self.max_game_steps and game_not_over:
+            while len(current_rollout) < self.config.max_game_steps and game_not_over:
                 state = game.current_state()
                 legal_actions = game.legal_actions()
-                action, log_prob, value, legal_actions_mask = self.select_action(state, legal_actions)
-                if self.print_moves:
+                decision = self.select_action(state, legal_actions)
+                if self.config.print_moves:
                     legal_action_names = ", ".join(game.action_name(legal_action) for legal_action in legal_actions)
                     print(f"Board:\n{state}")
-                    print(f"Legal actions: {legal_action_names}; selected action: {game.action_name(action)}")
-                next_state, raw_reward, done, moved = game.step(action)
-                assert moved, "If we selected an action from legal_actions, we should have moved"
+                    print(f"Legal actions: {legal_action_names}; selected action: {game.action_name(decision.action)}")
+                result = game.step(decision.action)
+                assert result.action_applied, "If we selected an action from legal_actions, it should be applied"
                 policy_rollout_information = PolicyRolloutInformation(
-                    state, action, next_state, log_prob, value, raw_reward * self.reward_multiplier, done, legal_actions_mask)
+                    state,
+                    decision.action,
+                    result.next_state,
+                    decision.log_prob,
+                    decision.value,
+                    result.reward * self.config.reward_multiplier,
+                    result.terminated,
+                    decision.illegal_actions_mask,
+                )
                 current_rollout.append(policy_rollout_information)
-                game_not_over = game_not_over and (not done)
+                game_not_over = game_not_over and (not result.terminated)
             game.reset(seed=self.rng.integers(0, 100000000))
             gae = 0
             for t in reversed(range(len(current_rollout))):
@@ -173,8 +179,8 @@ class PPO():
                 else:
                     actor_critic_output: ActorCriticOutput = self.model(self._state_tensor(step.next_state))
                     next_value = self._untransform_predicted_value(actor_critic_output.value).item()
-                delta = step.reward + self.gamma * next_value - step.value
-                gae = delta + self.gamma * self.gae_lambda * gae
+                delta = step.reward + self.config.gamma * next_value - step.value
+                gae = delta + self.config.gamma * self.config.gae_lambda * gae
                 current_rollout[t] = dataclasses.replace(step, advantage=gae)
             policy_rollout_information_list.extend(current_rollout)
         advantages = [step.advantage for step in policy_rollout_information_list]
@@ -201,8 +207,8 @@ class PPO():
         outside_ranges = []
         value_errors = []
         value_targets = []
-        for i in range(0, len(shuffled_rollouts), self.mini_batch_size):
-            minibatch = shuffled_rollouts[i : i + self.mini_batch_size]
+        for i in range(0, len(shuffled_rollouts), self.config.mini_batch_size):
+            minibatch = shuffled_rollouts[i : i + self.config.mini_batch_size]
             self.optimizer.zero_grad()
             objectives = self._compute_objective(minibatch, advantage_mean, advantage_std)
             policy_objectives.append(objectives.policy.detach())
@@ -214,8 +220,8 @@ class PPO():
             value_targets.append(objectives.value_target.detach())
             objective = (
                 objectives.policy
-                + self.value_coefficient * objectives.value
-                + self.entropy_coefficient * objectives.negative_entropy
+                + self.config.value_coefficient * objectives.value
+                + self.config.entropy_coefficient * objectives.negative_entropy
             ).mean()
             objective.backward()
             # TODO: consider gradient clipping
@@ -226,7 +232,7 @@ class PPO():
             negative_entropy=torch.cat(entropy_objectives).mean().item(),
             approximate_kl=torch.cat(kl_divergences).mean().item(),
             clip_fraction=torch.cat(outside_ranges).float().mean().item(),
-            explained_variance=1 - torch.cat(value_errors).var().item() /(torch.cat(value_targets).var().item() + self.denominator_epsilon)
+            explained_variance=1 - torch.cat(value_errors).var().item() /(torch.cat(value_targets).var().item() + self.config.denominator_epsilon)
         )
 
     def _compute_objective(
@@ -237,7 +243,7 @@ class PPO():
     ) -> BatchObjectives:
         # TODO: refactor these list comprehensions into somewhere nice
         advantages = torch.tensor([step.advantage for step in steps], device=self.device(), dtype=self.dtype())
-        normalized_advantages = (advantages - advantage_mean) / (advantage_std + self.denominator_epsilon)
+        normalized_advantages = (advantages - advantage_mean) / (advantage_std + self.config.denominator_epsilon)
         old_policy_log_probs = torch.tensor([step.log_prob for step in steps], device = self.device(), dtype=self.dtype())
         # dimension 0 is the batch dimension
         actor_critic_output: ActorCriticOutput = self.model(torch.cat([self._state_tensor(step.state) for step in steps], dim=0))
@@ -249,12 +255,12 @@ class PPO():
         log_probs = F.log_softmax(action_logits, dim=-1)
         sampled_actions = torch.tensor([step.action for step in steps], device=self.device())
         current_log_prob = log_probs[torch.arange(log_probs.shape[0], device=self.device()), sampled_actions]
-        clip_multiplier = torch.where(normalized_advantages > 0, 1 + self.clip_epsilon, 1 - self.clip_epsilon)
+        clip_multiplier = torch.where(normalized_advantages > 0, 1 + self.config.clip_epsilon, 1 - self.config.clip_epsilon)
         advantage_clip = clip_multiplier * normalized_advantages
         approximate_kl = old_policy_log_probs - current_log_prob
         probability_ratio = torch.exp(-approximate_kl)
         policy_objective = -torch.minimum(probability_ratio * normalized_advantages, advantage_clip)
-        outside_clip_range = torch.abs(probability_ratio - 1) > self.clip_epsilon
+        outside_clip_range = torch.abs(probability_ratio - 1) > self.config.clip_epsilon
         values = torch.tensor([step.value for step in steps], device=self.device(), dtype=self.dtype())
         value_target = advantages + values
         transformed_value_target = self._transform_value_target(value_target)
@@ -279,10 +285,10 @@ class PPO():
         policy_rollout_information_list, advantage_mean, advantage_std = self.collect_information(game)
         self._print_timestamp("Rollouts collected; starting PPO updates.")
         epoch_stats = []
-        self._print_timestamp(f"PPO update epoch 0/{self.update_epochs}.")
-        for epoch in range(1, self.update_epochs + 1):
+        self._print_timestamp(f"PPO update epoch 0/{self.config.update_epochs}.")
+        for epoch in range(1, self.config.update_epochs + 1):
             epoch_stats.append(self.run_epoch(policy_rollout_information_list, advantage_mean, advantage_std))
             if epoch % 10 == 0:
-                self._print_timestamp(f"PPO update epoch {epoch}/{self.update_epochs} complete.")
+                self._print_timestamp(f"PPO update epoch {epoch}/{self.config.update_epochs} complete.")
         self._print_timestamp("Outer iteration complete.")
         return epoch_stats

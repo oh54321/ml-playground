@@ -3,7 +3,7 @@ from typing import Tuple
 import numpy as np
 import torch
 
-from core.game import Game, State
+from core.game import Game, State, StepResult
 
 
 class State2048(State):
@@ -61,8 +61,7 @@ class Game2048(Game):
         self._add_random_tile()
         self._add_random_tile()
 
-    # Returns a tuple of the next state, the points from the current state, if the game is over, and if it was a valid move
-    def step(self, action: int) -> Tuple[State, float, bool, bool]:
+    def step(self, action: int) -> StepResult:
         if self.done:
             raise RuntimeError("step() called after game over")
         assert 0 <= action <= 3
@@ -73,7 +72,12 @@ class Game2048(Game):
         if moved:
             self._add_random_tile()
         self.done = self._is_game_over()
-        return self.state, reward, self.done, moved
+        return StepResult(
+            next_state=self.state,
+            reward=reward,
+            terminated=self.done,
+            action_applied=moved,
+        )
 
     def current_state(self) -> State:
         return self.state
