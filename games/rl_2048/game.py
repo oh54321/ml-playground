@@ -28,7 +28,7 @@ class State2048(State):
     # 0 maps to 0, nonzero tiles map to their log2
     def to_tensor(self) -> torch.Tensor:
         grid = torch.tensor(self.grid, dtype=torch.float32)
-        return torch.where(grid > 0, torch.log2(grid), grid)[None, None, :, :]
+        return torch.where(grid > 0, torch.log2(grid), grid)[None, :, :]
 
     def __repr__(self) -> str:
         return f"State2048(\n{self.grid}\n)"

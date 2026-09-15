@@ -113,8 +113,10 @@ class PPO():
     def dtype(self) -> torch.dtype:
         return next(self.model.parameters()).dtype
 
-    def _state_tensor(self, state: State) -> torch.Tensor:
-        return state.to_tensor().to(device=self.device(), dtype=self.dtype())
+    def _state_batch_tensor(self, states: List[State]) -> torch.Tensor:
+        """Stack CPU state samples, then transfer the completed batch once."""
+        state_batch = torch.stack([state.to_tensor() for state in states], dim=0)
+        return state_batch.to(device=self.device(), dtype=self.dtype())
 
     def _transform_value_target(self, value: torch.Tensor) -> torch.Tensor:
         """Map raw values to the space predicted by the value head."""
@@ -152,8 +154,9 @@ class PPO():
             raise ValueError(
                 "Every game passed to generate_next_actions must have at least one legal action"
             )
-        state_tensors = [game.current_state().to_tensor() for game in games]
-        tensor_state = torch.cat(state_tensors, dim=0).to(self.device(), self.dtype())
+        tensor_state = self._state_batch_tensor(
+            [game.current_state() for game in games]
+        )
         actor_critic_output: ActorCriticOutput = self.model(tensor_state)
         action_logits = actor_critic_output.action_logits
         values = self._untransform_predicted_value(actor_critic_output.value)
@@ -254,7 +257,9 @@ class PPO():
                 elif t + 1 < len(rollout):
                     next_value = rollout[t+1].value
                 else:
-                    actor_critic_output: ActorCriticOutput = self.model(self._state_tensor(step.next_state))
+                    actor_critic_output: ActorCriticOutput = self.model(
+                        self._state_batch_tensor([step.next_state])
+                    )
                     next_value = self._untransform_predicted_value(actor_critic_output.value).item()
                 delta = step.reward + self.config.gamma * next_value - step.value
                 gae = delta + self.config.gamma * self.config.gae_lambda * gae
@@ -323,7 +328,9 @@ class PPO():
         normalized_advantages = (advantages - advantage_mean) / (advantage_std + self.config.denominator_epsilon)
         old_policy_log_probs = torch.tensor([step.log_prob for step in steps], device = self.device(), dtype=self.dtype())
         # dimension 0 is the batch dimension
-        actor_critic_output: ActorCriticOutput = self.model(torch.cat([self._state_tensor(step.state) for step in steps], dim=0))
+        actor_critic_output: ActorCriticOutput = self.model(
+            self._state_batch_tensor([step.state for step in steps])
+        )
         action_logits = actor_critic_output.action_logits
         transformed_predicted_values = actor_critic_output.value
         predicted_values = self._untransform_predicted_value(transformed_predicted_values)
