@@ -4,9 +4,11 @@ from dataclasses import asdict
 from games.rl_2048.agent import ResNet, ResNetConfig
 from datetime import datetime
 import io
+import os
 from pathlib import Path
 from statistics import median
 import sys
+import tempfile
 
 import torch
 import torch.optim as optim
@@ -82,21 +84,35 @@ def save_checkpoint(
     mean_moves: float,
 ) -> None:
     """Save everything needed to inspect or resume the best evaluated policy."""
-    torch.save(
-        {
-            "outer_iteration": outer_iteration,
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "ppo_config": asdict(ppo_config),
-            "resnet_config": asdict(resnet_config),
-            "evaluation": {
-                "mean_score": mean_score,
-                "median_score": median_score,
-                "mean_moves": mean_moves,
-            },
+    checkpoint = {
+        "outer_iteration": outer_iteration,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "ppo_config": asdict(ppo_config),
+        "resnet_config": asdict(resnet_config),
+        "evaluation": {
+            "mean_score": mean_score,
+            "median_score": median_score,
+            "mean_moves": mean_moves,
         },
-        output_path,
-    )
+    }
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=output_path.parent,
+            prefix=f".{output_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary_file:
+            temporary_path = Path(temporary_file.name)
+            torch.save(checkpoint, temporary_file)
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+        os.replace(temporary_path, output_path)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 @torch.no_grad()
@@ -109,7 +125,7 @@ def save_completed_game(ppo: PPO, seed: int, output_path: Path | None = None) ->
     while not game.done:
         state = game.current_state()
         legal_actions = game.legal_actions()
-        decision = ppo.select_action(state, legal_actions, deterministic=True)
+        decision = ppo.generate_next_actions([game], deterministic=True)[0]
         result = game.step(decision.action)
         assert result.action_applied, "The policy selected an illegal action during evaluation"
 
@@ -146,8 +162,8 @@ def main() -> None:
     #     value_coefficient=0.5,
     #     entropy_coefficient=0.1,
     #     update_epochs=100,
-    #     num_policy_rollout=5000,
-    #     max_game_steps=2500,
+    #     num_parallel_games=20,
+    #     steps_per_game_per_rollout=250,
     #     mini_batch_size=500,
     #     seed=12345,
     #     print_moves=False,
@@ -160,8 +176,8 @@ def main() -> None:
         value_coefficient=0.1,
         entropy_coefficient=0.01,
         update_epochs=10,
-        num_policy_rollout=16384,
-        max_game_steps=1024,
+        num_parallel_games=16,
+        steps_per_game_per_rollout=1024,
         mini_batch_size=1024,
         seed=12345,
         reward_multiplier=0.01,
@@ -187,9 +203,15 @@ def main() -> None:
     )
     model = ResNet(resnet_config).to(device)
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
-    ppo = PPO(model, optimizer, ppo_config)
-    game = Game2048(seed=ppo_config.seed)
-    evaluation_output_dir = Path("artifacts") / "ppo_2048"
+    ppo = PPO(
+        model,
+        optimizer,
+        ppo_config,
+        game_factory=lambda seed: Game2048(seed=seed),
+    )
+    evaluation_output_root = Path("artifacts") / "ppo_2048"
+    run_timestamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S_%f")
+    evaluation_output_dir = evaluation_output_root / f"run_{run_timestamp}"
     checkpoint_path = evaluation_output_dir / "best.pt"
     num_evaluation_games = 100
     save_evaluation_traces = False
@@ -206,7 +228,7 @@ def main() -> None:
                 print("=" * 72)
                 print(f"Outer iteration {outer_iteration}")
                 print("=" * 72)
-                epoch_stats = ppo.run_outer_iteration(game)
+                epoch_stats = ppo.run_outer_iteration()
                 print_loss_curves(epoch_stats)
                 print_timestamp("Starting evaluation games.", ppo_config.print_timestamps)
                 was_training = model.training

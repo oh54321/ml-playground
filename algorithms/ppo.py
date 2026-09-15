@@ -1,14 +1,14 @@
 import dataclasses
 from dataclasses import dataclass
 from datetime import datetime
-from typing import List, Literal, Tuple
+from typing import Callable, List, Literal, Tuple
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.distributions import categorical
 
-from core.game import Game, State
+from core.game import Game, State, StepResult
 from games.rl_2048.agent import ActorCriticOutput, ResNet
 
 
@@ -41,8 +41,9 @@ class PPOConfig:
     value_coefficient: float
     entropy_coefficient: float
     update_epochs: int
-    num_policy_rollout: int
-    max_game_steps: int
+    num_parallel_games: int
+    steps_per_game_per_rollout: int
+    # TODO: implement max_episode_steps
     mini_batch_size: int
     reward_multiplier: float
     value_transform: Literal["identity", "signed_log1p"]
@@ -74,18 +75,37 @@ class EpochStatistics:
 
 
 class PPO():
-    def __init__(self, 
-        model: ResNet, 
-        optimizer: torch.optim.Optimizer, 
-        config: PPOConfig
+    def __init__(
+        self,
+        model: ResNet,
+        optimizer: torch.optim.Optimizer,
+        config: PPOConfig,
+        game_factory: Callable[[int], Game],
     ):
+        if config.value_transform not in ("identity", "signed_log1p"):
+            raise ValueError(f"Unsupported value transform: {config.value_transform}")
+        if config.num_parallel_games <= 0:
+            raise ValueError("num_parallel_games must be positive")
+        if config.steps_per_game_per_rollout <= 0:
+            raise ValueError("steps_per_game_per_rollout must be positive")
+
         torch.manual_seed(config.seed)
+
         self.config = config
         self.model: ResNet = model
         self.optimizer = optimizer
         self.rng = np.random.default_rng(config.seed)
-        if self.config.value_transform not in ("identity", "signed_log1p"):
-            raise ValueError(f"Unsupported value transform: {self.config.value_transform}")
+
+        seeds = self.rng.integers(
+            0,
+            2**32,
+            size=config.num_parallel_games,
+            dtype=np.uint32,
+        )
+        self.games: List[Game] = [
+            game_factory(int(seed))
+            for seed in seeds
+        ]
 
     def device(self) -> torch.device:
         return next(self.model.parameters()).device
@@ -113,85 +133,142 @@ class PPO():
             timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
             print(f"[{timestamp}] {message}")
 
-    # From the current state and a list of legal actions, return the next action and its policy metadata.
-    def select_action(
+    # This requires and validates that all games have at least one legal action.
+    # The function will throw if at least one game does not satisfy this
+    def generate_next_actions(
         self,
-        state: State,
-        legal_actions: List[int],
+        games: List[Game],
         deterministic: bool = False,
-    ) -> ActionDecision:
-        tensor_state = self._state_tensor(state)
-        actor_critic_output: ActorCriticOutput = self.model(tensor_state)
-        action_logits = actor_critic_output.action_logits[0]
-        value = self._untransform_predicted_value(actor_critic_output.value).item()
-        legal_actions_mask = torch.ones(len(action_logits), dtype=bool, device=action_logits.device)
-        legal_actions_mask[legal_actions] = 0
-        action_logits = action_logits.masked_fill(legal_actions_mask, -torch.inf)
-        categorical_distribution = categorical.Categorical(logits=action_logits)
-        action = action_logits.argmax() if deterministic else categorical_distribution.sample()
-        log_probability = categorical_distribution.log_prob(action)
-        return ActionDecision(
-            action=action.item(),
-            log_prob=log_probability.item(),
-            value=value,
-            illegal_actions_mask=legal_actions_mask,
+    ) -> List[ActionDecision]:
+        if not games:
+            raise ValueError("Must evaluate at least one game")
+        legal_actions_by_game = [game.legal_actions() for game in games]
+        legal_action_counts = torch.tensor(
+            [len(legal_actions) for legal_actions in legal_actions_by_game],
+            device=self.device(),
+            dtype=torch.long,
         )
+        if any(len(legal_actions) == 0 for legal_actions in legal_actions_by_game):
+            raise ValueError(
+                "Every game passed to generate_next_actions must have at least one legal action"
+            )
+        state_tensors = [game.current_state().to_tensor() for game in games]
+        tensor_state = torch.cat(state_tensors, dim=0).to(self.device(), self.dtype())
+        actor_critic_output: ActorCriticOutput = self.model(tensor_state)
+        action_logits = actor_critic_output.action_logits
+        values = self._untransform_predicted_value(actor_critic_output.value)
+        illegal_actions_mask = torch.ones_like(action_logits, dtype=torch.bool)
+        game_rows = torch.repeat_interleave(
+            torch.arange(
+                len(games),
+                device=self.device(),
+                dtype=torch.long,
+            ),
+            legal_action_counts,
+        )
+        legal_action_columns = torch.tensor(
+            [action for actions in legal_actions_by_game for action in actions],
+            device=self.device(),
+            dtype=torch.long,
+        )
+        illegal_actions_mask[game_rows, legal_action_columns] = 0
+        action_logits = action_logits.masked_fill(illegal_actions_mask, -torch.inf)
+        categorical_distribution = categorical.Categorical(logits=action_logits)
+        action = (
+            action_logits.argmax(dim=-1)
+            if deterministic
+            else categorical_distribution.sample()
+        )
+        log_probability = categorical_distribution.log_prob(action)
+        return [
+            ActionDecision(
+                action=action[i].item(),
+                log_prob=log_probability[i].item(),
+                value=values[i].item(),
+                illegal_actions_mask=illegal_actions_mask[i].clone(),
+            )
+            for i in range(len(games))
+        ]
 
-    # Runs games until we have the desired amount of policy rollouts.
-    # Starts a game from scratch, and continually calls select_action to generate the next state along with its information
+    # Runs games in parallel until we have the desired amount of policy rollouts.
+    # Starts games from their stored state from the last episode
+    # Continually generates the next state along with its information
     # If there are no legal moves, resets the game under a different seed
     @torch.no_grad()
-    def collect_information(self, game: Game) -> Tuple[List[PolicyRolloutInformation], float, float]:
-        policy_rollout_information_list: List[PolicyRolloutInformation] = []
-        while len(policy_rollout_information_list) < self.config.num_policy_rollout:
-            current_rollout: List[PolicyRolloutInformation] = []
-            game_not_over = True
-            while len(current_rollout) < self.config.max_game_steps and game_not_over:
-                state = game.current_state()
-                legal_actions = game.legal_actions()
-                decision = self.select_action(state, legal_actions)
-                if self.config.print_moves:
-                    legal_action_names = ", ".join(game.action_name(legal_action) for legal_action in legal_actions)
-                    print(f"Board:\n{state}")
-                    print(f"Legal actions: {legal_action_names}; selected action: {game.action_name(decision.action)}")
-                result = game.step(decision.action)
-                assert result.action_applied, "If we selected an action from legal_actions, it should be applied"
-                policy_rollout_information = PolicyRolloutInformation(
-                    state,
-                    decision.action,
-                    result.next_state,
-                    decision.log_prob,
-                    decision.value,
-                    result.reward * self.config.reward_multiplier,
-                    result.terminated,
-                    decision.illegal_actions_mask,
+    def collect_batched_information(self) -> Tuple[List[PolicyRolloutInformation], float, float]:
+        rollouts_by_game: List[List[PolicyRolloutInformation]] = [
+            [] for _ in range(self.config.num_parallel_games)
+        ]
+        for _ in range(self.config.steps_per_game_per_rollout):
+            states = [game.current_state().copy() for game in self.games]
+            decisions: List[ActionDecision] = self.generate_next_actions(self.games)
+            if self.config.print_moves:
+                for game_index, (game, state, decision) in enumerate(
+                    zip(self.games, states, decisions)
+                ):
+                    legal_action_names = ", ".join(
+                        game.action_name(legal_action)
+                        for legal_action in game.legal_actions()
+                    )
+                    print(f"Game {game_index} board:\n{state}")
+                    print(
+                        f"Legal actions: {legal_action_names}; selected action: "
+                        f"{game.action_name(decision.action)}"
+                    )
+            results: List[StepResult] = [
+                game.step(decision.action)
+                for game, decision in zip(self.games, decisions)
+            ]
+            assert all(result.action_applied for result in results), (
+                "If we selected an action from legal_actions, it should be applied"
+            )
+            for rollout, state, decision, result in zip(
+                rollouts_by_game,
+                states,
+                decisions,
+                results,
+            ):
+                rollout.append(
+                    PolicyRolloutInformation(
+                        state=state,
+                        action=decision.action,
+                        next_state=result.next_state.copy(),
+                        log_prob=decision.log_prob,
+                        value=decision.value,
+                        reward=result.reward * self.config.reward_multiplier,
+                        done=result.terminated,
+                        legal_actions_mask=decision.illegal_actions_mask,
+                    )
                 )
-                current_rollout.append(policy_rollout_information)
-                game_not_over = game_not_over and (not result.terminated)
-            game.reset(seed=self.rng.integers(0, 100000000))
+            for game, result in zip(self.games, results):
+                if result.terminated:
+                    game.reset(seed=int(self.rng.integers(0, 2**32)))
+        # TODO: could maybe parallelize?
+        for rollout in rollouts_by_game:
             gae = 0
-            for t in reversed(range(len(current_rollout))):
-                step: PolicyRolloutInformation = current_rollout[t]
+            for t in reversed(range(len(rollout))):
+                step: PolicyRolloutInformation = rollout[t]
                 if step.done:
                     next_value = 0
-                elif t + 1 < len(current_rollout):
-                    next_value = current_rollout[t+1].value
+                    gae = 0
+                elif t + 1 < len(rollout):
+                    next_value = rollout[t+1].value
                 else:
                     actor_critic_output: ActorCriticOutput = self.model(self._state_tensor(step.next_state))
                     next_value = self._untransform_predicted_value(actor_critic_output.value).item()
                 delta = step.reward + self.config.gamma * next_value - step.value
                 gae = delta + self.config.gamma * self.config.gae_lambda * gae
-                current_rollout[t] = dataclasses.replace(step, advantage=gae)
-            policy_rollout_information_list.extend(current_rollout)
-        advantages = [step.advantage for step in policy_rollout_information_list]
+                rollout[t] = dataclasses.replace(step, advantage=gae)
+        all_rollouts = [step for rollout in rollouts_by_game for step in rollout]
+        advantages = [step.advantage for step in all_rollouts]
         advantage_mean = float(np.mean(advantages))
         advantage_std = float(np.std(advantages))
         print(
             "Rollout advantages: "
             f"mean={advantage_mean:.4f}; std={advantage_std:.4f}"
         )
-        return policy_rollout_information_list, advantage_mean, advantage_std
-    
+        return all_rollouts, advantage_mean, advantage_std
+
     # Uses policy rollout information on minibatches 
     def run_epoch(
         self,
@@ -280,9 +357,9 @@ class PPO():
 
     # Outer iteration loop of PPO
     # Collects the policy rollout, then runs epochs reusing the rollout information
-    def run_outer_iteration(self, game: Game) -> List[EpochStatistics]:
+    def run_outer_iteration(self) -> List[EpochStatistics]:
         self._print_timestamp("Outer iteration starting; collecting rollouts.")
-        policy_rollout_information_list, advantage_mean, advantage_std = self.collect_information(game)
+        policy_rollout_information_list, advantage_mean, advantage_std = self.collect_batched_information()
         self._print_timestamp("Rollouts collected; starting PPO updates.")
         epoch_stats = []
         self._print_timestamp(f"PPO update epoch 0/{self.config.update_epochs}.")
