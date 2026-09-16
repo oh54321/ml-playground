@@ -74,6 +74,25 @@ class EpochStatistics:
     approximate_kl: float
     clip_fraction: float
     explained_variance: float
+    value_target_mean: float = 0.0
+    value_target_std: float = 0.0
+    predicted_value_mean: float = 0.0
+    predicted_value_std: float = 0.0
+    value_error_rms: float = 0.0
+    entropy: float = 0.0
+    learning_rate: float = 0.0
+
+
+@dataclass(frozen=True)
+class GradientStatistics:
+    """Gradient diagnostics for the shared actor-critic representation."""
+
+    policy_norm: float
+    value_norm: float
+    entropy_norm: float
+    value_to_policy_ratio: float
+    policy_value_cosine_similarity: float
+    relative_parameter_update_size: float = 0.0
 
 
 class PPO():
@@ -101,6 +120,7 @@ class PPO():
         self.model: ResNet = model
         self.optimizer = optimizer
         self.rng = np.random.default_rng(config.seed)
+        self.last_gradient_statistics: GradientStatistics | None = None
 
         seeds = self.rng.integers(
             0,
@@ -323,6 +343,7 @@ class PPO():
         policy_rollout_information_list: List[PolicyRolloutInformation],
         advantage_mean: float,
         advantage_std: float,
+        measure_gradient_diagnostics: bool = False,
     ) -> EpochStatistics:
         shuffled_rollouts = self.rng.permutation(policy_rollout_information_list)
         policy_objectives = []
@@ -348,6 +369,16 @@ class PPO():
                 + self.config.value_coefficient * objectives.value
                 + self.config.entropy_coefficient * objectives.negative_entropy
             ).mean()
+            if measure_gradient_diagnostics and i == 0:
+                self.last_gradient_statistics = self._measure_gradient_statistics(
+                    objectives,
+                )
+                parameters_before_update = tuple(
+                    parameter.detach().clone()
+                    for parameter in self.model.trunk.parameters()
+                )
+            else:
+                parameters_before_update = None
             objective.backward()
             if self.config.gradient_clip_norm is not None:
                 torch.nn.utils.clip_grad_norm_(
@@ -355,13 +386,115 @@ class PPO():
                     self.config.gradient_clip_norm,
                 )
             self.optimizer.step()
+            if parameters_before_update is not None:
+                assert self.last_gradient_statistics is not None
+                self.last_gradient_statistics = dataclasses.replace(
+                    self.last_gradient_statistics,
+                    relative_parameter_update_size=self._relative_parameter_update_size(
+                        parameters_before_update,
+                        tuple(self.model.trunk.parameters()),
+                    ),
+                )
+        all_value_targets = torch.cat(value_targets)
+        all_value_errors = torch.cat(value_errors)
+        all_predicted_values = all_value_targets - all_value_errors
         return EpochStatistics(
             policy_loss=torch.cat(policy_objectives).mean().item(),
             value_loss=torch.cat(value_objectives).mean().item(),
             negative_entropy=torch.cat(entropy_objectives).mean().item(),
             approximate_kl=torch.cat(kl_divergences).mean().item(),
             clip_fraction=torch.cat(outside_ranges).float().mean().item(),
-            explained_variance=1 - torch.cat(value_errors).var().item() /(torch.cat(value_targets).var().item() + self.config.denominator_epsilon)
+            explained_variance=1 - all_value_errors.var().item() /(all_value_targets.var().item() + self.config.denominator_epsilon),
+            value_target_mean=all_value_targets.mean().item(),
+            value_target_std=all_value_targets.std(unbiased=False).item(),
+            predicted_value_mean=all_predicted_values.mean().item(),
+            predicted_value_std=all_predicted_values.std(unbiased=False).item(),
+            value_error_rms=torch.sqrt(all_value_errors.pow(2).mean()).item(),
+            entropy=-torch.cat(entropy_objectives).mean().item(),
+            learning_rate=float(self.optimizer.param_groups[0]["lr"]),
+        )
+
+    @staticmethod
+    def _gradient_vector(
+        gradients: tuple[torch.Tensor | None, ...],
+        parameters: tuple[torch.nn.Parameter, ...],
+    ) -> torch.Tensor:
+        """Flatten gradients while preserving one entry per shared parameter."""
+        return torch.cat(
+            [
+                (gradient.detach() if gradient is not None else torch.zeros_like(parameter)).reshape(-1)
+                for gradient, parameter in zip(gradients, parameters)
+            ]
+        )
+
+    def _measure_gradient_statistics(
+        self,
+        objectives: BatchObjectives,
+    ) -> GradientStatistics:
+        """Measure weighted loss gradients on one minibatch's shared trunk."""
+        shared_parameters = tuple(self.model.trunk.parameters())
+        policy_loss = objectives.policy.mean()
+        value_loss = self.config.value_coefficient * objectives.value.mean()
+        entropy_loss = self.config.entropy_coefficient * objectives.negative_entropy.mean()
+        policy_gradients = torch.autograd.grad(
+            policy_loss,
+            shared_parameters,
+            retain_graph=True,
+            allow_unused=True,
+        )
+        value_gradients = torch.autograd.grad(
+            value_loss,
+            shared_parameters,
+            retain_graph=True,
+            allow_unused=True,
+        )
+        entropy_gradients = torch.autograd.grad(
+            entropy_loss,
+            shared_parameters,
+            retain_graph=True,
+            allow_unused=True,
+        )
+        policy_vector = self._gradient_vector(policy_gradients, shared_parameters)
+        value_vector = self._gradient_vector(value_gradients, shared_parameters)
+        entropy_vector = self._gradient_vector(entropy_gradients, shared_parameters)
+        policy_norm = torch.linalg.vector_norm(policy_vector).item()
+        value_norm = torch.linalg.vector_norm(value_vector).item()
+        entropy_norm = torch.linalg.vector_norm(entropy_vector).item()
+        value_to_policy_ratio = value_norm / (policy_norm + self.config.denominator_epsilon)
+        policy_value_cosine_similarity = torch.nn.functional.cosine_similarity(
+            policy_vector,
+            value_vector,
+            dim=0,
+            eps=self.config.denominator_epsilon,
+        ).item()
+        return GradientStatistics(
+            policy_norm=policy_norm,
+            value_norm=value_norm,
+            entropy_norm=entropy_norm,
+            value_to_policy_ratio=value_to_policy_ratio,
+            policy_value_cosine_similarity=policy_value_cosine_similarity,
+        )
+
+    def _relative_parameter_update_size(
+        self,
+        parameters_before_update: tuple[torch.Tensor, ...],
+        parameters_after_update: tuple[torch.nn.Parameter, ...],
+    ) -> float:
+        """Return the applied trunk update norm relative to its starting norm."""
+        update_squared_norm = sum(
+            (parameter.detach() - parameter_before).pow(2).sum()
+            for parameter_before, parameter in zip(
+                parameters_before_update,
+                parameters_after_update,
+            )
+        )
+        parameter_squared_norm = sum(
+            parameter_before.pow(2).sum()
+            for parameter_before in parameters_before_update
+        )
+        return (
+            torch.sqrt(update_squared_norm).item()
+            / (torch.sqrt(parameter_squared_norm).item() + self.config.denominator_epsilon)
         )
 
     def _compute_objective(
@@ -419,9 +552,17 @@ class PPO():
         policy_rollout_information_list, advantage_mean, advantage_std = self.collect_batched_information()
         self._print_timestamp("Rollouts collected; starting PPO updates.")
         epoch_stats = []
+        self.last_gradient_statistics = None
         self._print_timestamp(f"PPO update epoch 0/{self.config.update_epochs}.")
         for epoch in range(1, self.config.update_epochs + 1):
-            epoch_stats.append(self.run_epoch(policy_rollout_information_list, advantage_mean, advantage_std))
+            epoch_stats.append(
+                self.run_epoch(
+                    policy_rollout_information_list,
+                    advantage_mean,
+                    advantage_std,
+                    measure_gradient_diagnostics=epoch == 1,
+                )
+            )
             if epoch % 10 == 0:
                 self._print_timestamp(f"PPO update epoch {epoch}/{self.config.update_epochs} complete.")
         self._print_timestamp("Outer iteration complete.")

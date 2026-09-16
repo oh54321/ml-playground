@@ -1,5 +1,5 @@
 from torch.optim.lr_scheduler import ExponentialLR
-from algorithms.ppo import EpochStatistics, PPO, PPOConfig
+from algorithms.ppo import EpochStatistics, GradientStatistics, PPO, PPOConfig
 from contextlib import redirect_stdout
 from dataclasses import asdict, dataclass
 from games.rl_2048.agent import ResNet, ResNetConfig
@@ -57,6 +57,51 @@ def print_loss_curves(epoch_stats: list[EpochStatistics]) -> None:
         values = [getattr(stats, attribute) for stats in epoch_stats]
         formatted_values = ", ".join(f"{value:.4f}" for value in values)
         print(f"  {name:>16}: {_sparkline(values)}  [{formatted_values}]")
+
+
+def print_value_diagnostics(epoch_stats: list[EpochStatistics]) -> None:
+    """Print value-target scale once and value-fit diagnostics per update epoch."""
+    if not epoch_stats:
+        return
+    first_stats = epoch_stats[0]
+    print(
+        "  value target scale: "
+        f"mean={first_stats.value_target_mean:.4f}, "
+        f"std={first_stats.value_target_std:.4f}"
+    )
+    metrics = (
+        ("predicted value mean", "predicted_value_mean"),
+        ("predicted value std", "predicted_value_std"),
+        ("value error RMS", "value_error_rms"),
+    )
+    for name, attribute in metrics:
+        values = [getattr(stats, attribute) for stats in epoch_stats]
+        formatted_values = ", ".join(f"{value:.4f}" for value in values)
+        print(f"  {name:>20}: {_sparkline(values)}  [{formatted_values}]")
+
+
+def print_gradient_diagnostics(
+    gradient_statistics: GradientStatistics | None,
+) -> None:
+    """Print loss-gradient diagnostics for the shared actor-critic trunk."""
+    if gradient_statistics is None:
+        return
+    print(
+        "  shared trunk gradient norms: "
+        f"policy={gradient_statistics.policy_norm:.4f}, "
+        f"value={gradient_statistics.value_norm:.4f}, "
+        f"entropy={gradient_statistics.entropy_norm:.4f}"
+    )
+    print(
+        "  value/policy gradient ratio: "
+        f"{gradient_statistics.value_to_policy_ratio:.4f}; "
+        "policy/value cosine similarity: "
+        f"{gradient_statistics.policy_value_cosine_similarity:.4f}"
+    )
+    print(
+        "  relative shared trunk parameter update: "
+        f"{gradient_statistics.relative_parameter_update_size:.6e}"
+    )
 
 
 def print_outer_iteration_header(outer_iteration: int) -> None:
@@ -399,9 +444,9 @@ def main() -> None:
         gamma=1.0,
         gae_lambda=0.95,
         clip_epsilon=0.2,
-        value_coefficient=0.1,
+        value_coefficient=0.05,
         entropy_coefficient=0.01,
-        update_epochs=10,
+        update_epochs=5,
         num_parallel_games=16,
         steps_per_game_per_rollout=1024,
         max_episode_steps=2**20,
@@ -476,6 +521,8 @@ def main() -> None:
                 epoch_stats = ppo.run_outer_iteration()
                 scheduler.step()
                 print_loss_curves(epoch_stats)
+                print_value_diagnostics(epoch_stats)
+                print_gradient_diagnostics(ppo.last_gradient_statistics)
                 if outer_iteration % evaluation_interval == 0:
                     evaluate_and_report(
                         ppo,
