@@ -414,8 +414,8 @@ def main() -> None:
         print_moves=False,
         print_timestamps=True,
     )
-    num_outer_iterations = 20
-    evaluation_interval = 1  # Evaluate every k outer iterations; set to 5 for longer runs.
+    num_outer_iterations = 200
+    evaluation_interval = 5  # Evaluate every k outer iterations; set to 5 for longer runs.
     evaluation_seed = 67890  # Independent, fixed seed stream for evaluation games.
     if evaluation_interval < 1:
         raise ValueError("evaluation_interval must be at least 1")
