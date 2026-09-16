@@ -58,6 +58,39 @@ def print_loss_curves(epoch_stats: list[EpochStatistics]) -> None:
         print(f"  {name:>16}: {_sparkline(values)}  [{formatted_values}]")
 
 
+def save_evaluation_plots(
+    evaluation_history: dict[str, list[float]],
+    output_dir: Path,
+) -> None:
+    """Save one score-over-training plot for each evaluation statistic."""
+    os.environ.setdefault("MPLCONFIGDIR", str(Path(tempfile.gettempdir()) / "matplotlib"))
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    plot_details = (
+        ("mean", "Mean evaluation score", "evaluation_mean_score.png"),
+        ("median", "Median evaluation score", "evaluation_median_score.png"),
+        ("best", "Best evaluation game score", "evaluation_best_score.png"),
+        ("worst", "Worst evaluation game score", "evaluation_worst_score.png"),
+    )
+    iterations = list(range(1, len(evaluation_history["mean"]) + 1))
+
+    for metric, title, filename in plot_details:
+        figure, axis = plt.subplots(figsize=(8, 5))
+        axis.plot(iterations, evaluation_history[metric], marker="o")
+        axis.set_title(title)
+        axis.set_xlabel("Outer training iteration")
+        axis.set_ylabel("Score (points)")
+        axis.set_xticks(iterations)
+        axis.set_ylim(bottom=0)
+        axis.grid(True, alpha=0.3)
+        figure.tight_layout()
+        figure.savefig(output_dir / filename, dpi=150)
+        plt.close(figure)
+
+
 def select_device() -> torch.device:
     if torch.cuda.is_available():
         return torch.device("cuda")
@@ -190,7 +223,7 @@ def main() -> None:
         print_moves=False,
         print_timestamps=True,
     )
-    num_outer_iterations = 5
+    num_outer_iterations = 20
     device = select_device()
     torch.manual_seed(ppo_config.seed)
     resnet_config = ResNetConfig(
@@ -220,6 +253,7 @@ def main() -> None:
     num_evaluation_games = 100
     save_evaluation_traces = False
     best_mean_score = float("-inf")
+    evaluation_history = {"mean": [], "median": [], "best": [], "worst": []}
     evaluation_output_dir.mkdir(parents=True, exist_ok=True)
     run_summary_path = evaluation_output_dir / "summary.txt"
     run_summary_path.write_text("PPO 2048 evaluation summary\n\n", encoding="utf-8")
@@ -266,6 +300,11 @@ def main() -> None:
                 mean_score = sum(scores) / len(scores)
                 median_score = median(scores)
                 mean_moves = sum(moves) / len(moves)
+                evaluation_history["mean"].append(mean_score)
+                evaluation_history["median"].append(median_score)
+                evaluation_history["best"].append(best_game[0])
+                evaluation_history["worst"].append(worst_game[0])
+                save_evaluation_plots(evaluation_history, evaluation_output_dir)
                 if mean_score > best_mean_score:
                     best_mean_score = mean_score
                     save_checkpoint(
