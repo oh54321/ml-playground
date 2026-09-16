@@ -20,7 +20,8 @@ class PolicyRolloutInformation:
     log_prob: float
     value: float
     reward: float
-    done: bool
+    done: bool # environment ended naturally
+    truncated: bool # rollout was truncated due to max_episode_steps
     legal_actions_mask: torch.Tensor
     advantage: float = None
 
@@ -43,11 +44,12 @@ class PPOConfig:
     update_epochs: int
     num_parallel_games: int
     steps_per_game_per_rollout: int
-    # TODO: implement max_episode_steps
+    max_episode_steps: int
     mini_batch_size: int
     reward_multiplier: float
     value_transform: Literal["identity", "signed_log1p"]
     denominator_epsilon: float
+    gradient_clip_norm: float | None
     seed: int
     print_moves: bool
     print_timestamps: bool = True
@@ -88,6 +90,10 @@ class PPO():
             raise ValueError("num_parallel_games must be positive")
         if config.steps_per_game_per_rollout <= 0:
             raise ValueError("steps_per_game_per_rollout must be positive")
+        if config.max_episode_steps <= 0:
+            raise ValueError("max_episode_steps must be positive")
+        if config.gradient_clip_norm is not None and config.gradient_clip_norm <= 0:
+            raise ValueError("gradient_clip_norm must be positive when provided")
 
         torch.manual_seed(config.seed)
 
@@ -106,6 +112,7 @@ class PPO():
             game_factory(int(seed))
             for seed in seeds
         ]
+        self.game_steps = [0 for _ in self.games]
 
     def device(self) -> torch.device:
         return next(self.model.parameters()).device
@@ -118,6 +125,12 @@ class PPO():
         state_batch = torch.stack([state.to_tensor() for state in states], dim=0)
         return state_batch.to(device=self.device(), dtype=self.dtype())
 
+    def _predict_value(self, state: State) -> float:
+        actor_critic_output: ActorCriticOutput = self.model(
+            self._state_batch_tensor([state])
+        )
+        return self._untransform_predicted_value(actor_critic_output.value).item()
+
     def _transform_value_target(self, value: torch.Tensor) -> torch.Tensor:
         """Map raw values to the space predicted by the value head."""
         if self.config.value_transform == "identity":
@@ -129,6 +142,28 @@ class PPO():
         if self.config.value_transform == "identity":
             return transformed_value
         return torch.sign(transformed_value) * torch.expm1(torch.abs(transformed_value))
+
+    def _steps_to_tensor(
+        self,
+        steps: List[PolicyRolloutInformation],
+        field_name: str,
+        *,
+        dtype: torch.dtype | None = None,
+    ) -> torch.Tensor:
+        """Convert one rollout field into a tensor on the model's device."""
+        if len(steps) == 0:
+            raise ValueError("Cannot create a tensor from an empty step list")
+        values = [getattr(step, field_name) for step in steps]
+        if isinstance(values[0], torch.Tensor):
+            tensor = torch.stack(values, dim=0)
+            if dtype is None:
+                return tensor.to(device=self.device())
+            return tensor.to(device=self.device(), dtype=dtype)
+        return torch.tensor(
+            values,
+            device=self.device(),
+            dtype=dtype if dtype is not None else self.dtype(),
+        )
 
     def _print_timestamp(self, message: str) -> None:
         if self.config.print_timestamps:
@@ -225,12 +260,14 @@ class PPO():
             assert all(result.action_applied for result in results), (
                 "If we selected an action from legal_actions, it should be applied"
             )
-            for rollout, state, decision, result in zip(
-                rollouts_by_game,
-                states,
-                decisions,
-                results,
+            for game_index, (rollout, state, decision, result) in enumerate(
+                zip(rollouts_by_game, states, decisions, results)
             ):
+                game_steps = self.game_steps[game_index] + 1
+                truncated = (
+                    not result.terminated
+                    and game_steps >= self.config.max_episode_steps
+                )
                 rollout.append(
                     PolicyRolloutInformation(
                         state=state,
@@ -240,12 +277,15 @@ class PPO():
                         value=decision.value,
                         reward=result.reward * self.config.reward_multiplier,
                         done=result.terminated,
+                        truncated=truncated,
                         legal_actions_mask=decision.illegal_actions_mask,
                     )
                 )
-            for game, result in zip(self.games, results):
-                if result.terminated:
+                self.game_steps[game_index] = game_steps
+            for game_index, (game, result) in enumerate(zip(self.games, results)):
+                if result.terminated or rollouts_by_game[game_index][-1].truncated:
                     game.reset(seed=int(self.rng.integers(0, 2**32)))
+                    self.game_steps[game_index] = 0
         # TODO: could maybe parallelize?
         for rollout in rollouts_by_game:
             gae = 0
@@ -254,13 +294,13 @@ class PPO():
                 if step.done:
                     next_value = 0
                     gae = 0
+                elif step.truncated:
+                    next_value = self._predict_value(step.next_state)
+                    gae = 0
                 elif t + 1 < len(rollout):
                     next_value = rollout[t+1].value
                 else:
-                    actor_critic_output: ActorCriticOutput = self.model(
-                        self._state_batch_tensor([step.next_state])
-                    )
-                    next_value = self._untransform_predicted_value(actor_critic_output.value).item()
+                    next_value = self._predict_value(step.next_state)
                 delta = step.reward + self.config.gamma * next_value - step.value
                 gae = delta + self.config.gamma * self.config.gae_lambda * gae
                 rollout[t] = dataclasses.replace(step, advantage=gae)
@@ -306,7 +346,11 @@ class PPO():
                 + self.config.entropy_coefficient * objectives.negative_entropy
             ).mean()
             objective.backward()
-            # TODO: consider gradient clipping
+            if self.config.gradient_clip_norm is not None:
+                torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(),
+                    self.config.gradient_clip_norm,
+                )
             self.optimizer.step()
         return EpochStatistics(
             policy_loss=torch.cat(policy_objectives).mean().item(),
@@ -323,10 +367,9 @@ class PPO():
         advantage_mean: float,
         advantage_std: float,
     ) -> BatchObjectives:
-        # TODO: refactor these list comprehensions into somewhere nice
-        advantages = torch.tensor([step.advantage for step in steps], device=self.device(), dtype=self.dtype())
+        advantages = self._steps_to_tensor(steps, "advantage")
         normalized_advantages = (advantages - advantage_mean) / (advantage_std + self.config.denominator_epsilon)
-        old_policy_log_probs = torch.tensor([step.log_prob for step in steps], device = self.device(), dtype=self.dtype())
+        old_policy_log_probs = self._steps_to_tensor(steps, "log_prob")
         # dimension 0 is the batch dimension
         actor_critic_output: ActorCriticOutput = self.model(
             self._state_batch_tensor([step.state for step in steps])
@@ -334,10 +377,14 @@ class PPO():
         action_logits = actor_critic_output.action_logits
         transformed_predicted_values = actor_critic_output.value
         predicted_values = self._untransform_predicted_value(transformed_predicted_values)
-        legal_actions_mask = torch.stack([step.legal_actions_mask for step in steps], dim=0)
+        legal_actions_mask = self._steps_to_tensor(
+            steps,
+            "legal_actions_mask",
+            dtype=torch.bool,
+        )
         action_logits = action_logits.masked_fill(legal_actions_mask, -torch.inf)
         log_probs = F.log_softmax(action_logits, dim=-1)
-        sampled_actions = torch.tensor([step.action for step in steps], device=self.device())
+        sampled_actions = self._steps_to_tensor(steps, "action", dtype=torch.long)
         current_log_prob = log_probs[torch.arange(log_probs.shape[0], device=self.device()), sampled_actions]
         clip_multiplier = torch.where(normalized_advantages > 0, 1 + self.config.clip_epsilon, 1 - self.config.clip_epsilon)
         advantage_clip = clip_multiplier * normalized_advantages
@@ -345,7 +392,7 @@ class PPO():
         probability_ratio = torch.exp(-approximate_kl)
         policy_objective = -torch.minimum(probability_ratio * normalized_advantages, advantage_clip)
         outside_clip_range = torch.abs(probability_ratio - 1) > self.config.clip_epsilon
-        values = torch.tensor([step.value for step in steps], device=self.device(), dtype=self.dtype())
+        values = self._steps_to_tensor(steps, "value")
         value_target = advantages + values
         transformed_value_target = self._transform_value_target(value_target)
         value_error = value_target - predicted_values
