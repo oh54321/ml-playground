@@ -1,6 +1,7 @@
+from torch.optim.lr_scheduler import ExponentialLR
 from algorithms.ppo import EpochStatistics, PPO, PPOConfig
 from contextlib import redirect_stdout
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from games.rl_2048.agent import ResNet, ResNetConfig
 from datetime import datetime
 import io
@@ -56,6 +57,13 @@ def print_loss_curves(epoch_stats: list[EpochStatistics]) -> None:
         values = [getattr(stats, attribute) for stats in epoch_stats]
         formatted_values = ", ".join(f"{value:.4f}" for value in values)
         print(f"  {name:>16}: {_sparkline(values)}  [{formatted_values}]")
+
+
+def print_outer_iteration_header(outer_iteration: int) -> None:
+    print()
+    print("=" * 72)
+    print(f"Outer iteration {outer_iteration}")
+    print("=" * 72)
 
 
 def save_evaluation_plots(
@@ -274,6 +282,101 @@ def save_completed_games(
     return scores, moves, worst_game, best_game
 
 
+@dataclass
+class EvaluationRun:
+    output_dir: Path
+    seed_base: int
+    num_games: int
+    save_traces: bool
+    history: dict[str, list[float]]
+    iterations: list[int]
+    best_mean_score: float = float("-inf")
+
+
+def evaluate_and_report(
+    ppo: PPO,
+    model: ResNet,
+    optimizer: optim.Optimizer,
+    ppo_config: PPOConfig,
+    resnet_config: ResNetConfig,
+    outer_iteration: int,
+    evaluation: EvaluationRun,
+) -> None:
+    """Run one evaluation pass and update its plots, summaries, and checkpoint."""
+    print_timestamp("Starting evaluation games.", ppo_config.print_timestamps)
+    was_training = model.training
+    model.eval()
+    try:
+        outer_evaluation_dir = evaluation.output_dir / f"outer_iteration_{outer_iteration:04d}"
+        scores, moves, worst_game, best_game = save_completed_games(
+            ppo,
+            [
+                evaluation.seed_base + game_number
+                for game_number in range(1, evaluation.num_games + 1)
+            ],
+            trace_output_dir=outer_evaluation_dir if evaluation.save_traces else None,
+        )
+        scores.sort()
+        outer_evaluation_dir.mkdir(parents=True, exist_ok=True)
+        (outer_evaluation_dir / "worst_game.txt").write_text(worst_game[3], encoding="utf-8")
+        (outer_evaluation_dir / "best_game.txt").write_text(best_game[3], encoding="utf-8")
+        mean_score = sum(scores) / len(scores)
+        median_score = median(scores)
+        mean_moves = sum(moves) / len(moves)
+        evaluation.history["mean"].append(mean_score)
+        evaluation.history["median"].append(median_score)
+        evaluation.history["best"].append(best_game[0])
+        evaluation.history["worst"].append(worst_game[0])
+        evaluation.history["mean_moves"].append(mean_moves)
+        evaluation.iterations.append(outer_iteration)
+        save_evaluation_plots(
+            evaluation.history,
+            evaluation.iterations,
+            evaluation.output_dir,
+        )
+
+        if mean_score > evaluation.best_mean_score:
+            evaluation.best_mean_score = mean_score
+            save_checkpoint(
+                evaluation.output_dir / "best.pt",
+                model,
+                optimizer,
+                ppo_config,
+                resnet_config,
+                outer_iteration,
+                mean_score,
+                median_score,
+                mean_moves,
+            )
+            print(f"  Saved new best checkpoint: {evaluation.output_dir / 'best.pt'}")
+
+        summary = (
+            f"Outer iteration {outer_iteration}\n"
+            f"Mean score: {mean_score:.1f}\n"
+            f"Median score: {median_score:.1f}\n"
+            f"Mean moves: {mean_moves:.1f}\n"
+            f"Raw scores: {scores}\n"
+            f"Best game: score {best_game[0]}, steps {best_game[1]}, seed {best_game[2]}\n"
+            f"Worst game: score {worst_game[0]}, steps {worst_game[1]}, seed {worst_game[2]}\n"
+            f"Traces: {outer_evaluation_dir}\n\n"
+        )
+        with (evaluation.output_dir / "summary.txt").open("a", encoding="utf-8") as summary_file:
+            summary_file.write(summary)
+        print(
+            f"  Evaluation mean score: {mean_score:.1f}; "
+            f"median score: {median_score:.1f}; mean moves: {mean_moves:.1f}"
+        )
+        print(f"  Evaluation raw scores: {scores}")
+        print(
+            f"  Best game: {best_game[0]} points; worst game: {worst_game[0]} points "
+            f"({outer_evaluation_dir})"
+        )
+        print(f"  Evaluation traces: {outer_evaluation_dir}; run summary: {evaluation.output_dir / 'summary.txt'}")
+        print_timestamp("Evaluation games complete.", ppo_config.print_timestamps)
+    finally:
+        model.train(was_training)
+
+
 def main() -> None:
     # Larger experiment settings to revisit after the smoke test succeeds:
     # ppo_config = PPOConfig(
@@ -332,6 +435,7 @@ def main() -> None:
     )
     model = ResNet(resnet_config).to(device)
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
+    scheduler = ExponentialLR(optimizer, 0.995)
     ppo = PPO(
         model,
         optimizer,
@@ -341,18 +445,20 @@ def main() -> None:
     evaluation_output_root = Path("artifacts") / "ppo_2048"
     run_timestamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S_%f")
     evaluation_output_dir = evaluation_output_root / f"run_{run_timestamp}"
-    checkpoint_path = evaluation_output_dir / "best.pt"
-    num_evaluation_games = 100
-    save_evaluation_traces = False
-    best_mean_score = float("-inf")
-    evaluation_history = {
-        "mean": [],
-        "median": [],
-        "best": [],
-        "worst": [],
-        "mean_moves": [],
-    }
-    evaluation_iterations = []
+    evaluation = EvaluationRun(
+        output_dir=evaluation_output_dir,
+        seed_base=evaluation_seed,
+        num_games=100,
+        save_traces=False,
+        history={
+            "mean": [],
+            "median": [],
+            "best": [],
+            "worst": [],
+            "mean_moves": [],
+        },
+        iterations=[],
+    )
     evaluation_output_dir.mkdir(parents=True, exist_ok=True)
     run_summary_path = evaluation_output_dir / "summary.txt"
     run_summary_path.write_text(
@@ -366,86 +472,25 @@ def main() -> None:
         with redirect_stdout(_Tee(sys.stdout, raw_summary_file)):
             print(f"Training smoke test on {device}.")
             for outer_iteration in range(1, num_outer_iterations + 1):
-                print()
-                print("=" * 72)
-                print(f"Outer iteration {outer_iteration}")
-                print("=" * 72)
+                print_outer_iteration_header(outer_iteration)
                 epoch_stats = ppo.run_outer_iteration()
+                scheduler.step()
                 print_loss_curves(epoch_stats)
-                if outer_iteration % evaluation_interval != 0:
-                    print(
-                        "Skipping evaluation; next evaluation is every "
-                        f"{evaluation_interval} outer iterations."
-                    )
-                    continue
-                print_timestamp("Starting evaluation games.", ppo_config.print_timestamps)
-                was_training = model.training
-                model.eval()
-                outer_evaluation_dir = evaluation_output_dir / f"outer_iteration_{outer_iteration:04d}"
-                scores, moves, worst_game, best_game = save_completed_games(
-                    ppo,
-                    [
-                        evaluation_seed + game_number
-                        for game_number in range(1, num_evaluation_games + 1)
-                    ],
-                    trace_output_dir=outer_evaluation_dir if save_evaluation_traces else None,
-                )
-                scores.sort()
-                outer_evaluation_dir.mkdir(parents=True, exist_ok=True)
-                (outer_evaluation_dir / "worst_game.txt").write_text(worst_game[3], encoding="utf-8")
-                (outer_evaluation_dir / "best_game.txt").write_text(best_game[3], encoding="utf-8")
-                mean_score = sum(scores) / len(scores)
-                median_score = median(scores)
-                mean_moves = sum(moves) / len(moves)
-                evaluation_history["mean"].append(mean_score)
-                evaluation_history["median"].append(median_score)
-                evaluation_history["best"].append(best_game[0])
-                evaluation_history["worst"].append(worst_game[0])
-                evaluation_history["mean_moves"].append(mean_moves)
-                evaluation_iterations.append(outer_iteration)
-                save_evaluation_plots(
-                    evaluation_history,
-                    evaluation_iterations,
-                    evaluation_output_dir,
-                )
-                if mean_score > best_mean_score:
-                    best_mean_score = mean_score
-                    save_checkpoint(
-                        checkpoint_path,
+                if outer_iteration % evaluation_interval == 0:
+                    evaluate_and_report(
+                        ppo,
                         model,
                         optimizer,
                         ppo_config,
                         resnet_config,
                         outer_iteration,
-                        mean_score,
-                        median_score,
-                        mean_moves,
+                        evaluation,
                     )
-                    print(f"  Saved new best checkpoint: {checkpoint_path}")
-                summary = (
-                    f"Outer iteration {outer_iteration}\n"
-                    f"Mean score: {mean_score:.1f}\n"
-                    f"Median score: {median_score:.1f}\n"
-                    f"Mean moves: {mean_moves:.1f}\n"
-                    f"Raw scores: {scores}\n"
-                    f"Best game: score {best_game[0]}, steps {best_game[1]}, seed {best_game[2]}\n"
-                    f"Worst game: score {worst_game[0]}, steps {worst_game[1]}, seed {worst_game[2]}\n"
-                    f"Traces: {outer_evaluation_dir}\n\n"
-                )
-                with run_summary_path.open("a", encoding="utf-8") as summary_file:
-                    summary_file.write(summary)
-                print(
-                    f"  Evaluation mean score: {mean_score:.1f}; "
-                    f"median score: {median_score:.1f}; mean moves: {mean_moves:.1f}"
-                )
-                print(f"  Evaluation raw scores: {scores}")
-                print(
-                    f"  Best game: {best_game[0]} points; worst game: {worst_game[0]} points "
-                    f"({outer_evaluation_dir})"
-                )
-                print(f"  Evaluation traces: {outer_evaluation_dir}; run summary: {run_summary_path}")
-                print_timestamp("Evaluation games complete.", ppo_config.print_timestamps)
-                model.train(was_training)
+                else:
+                    print(
+                        f"Skipping evaluation at outer iteration {outer_iteration}; "
+                        f"evaluation interval is {evaluation_interval}."
+                    )
 
 
 if __name__ == "__main__":
