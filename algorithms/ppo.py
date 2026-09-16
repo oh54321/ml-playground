@@ -218,11 +218,14 @@ class PPO():
             else categorical_distribution.sample()
         )
         log_probability = categorical_distribution.log_prob(action)
+        action_values = action.tolist()
+        log_probability_values = log_probability.tolist()
+        value_values = values.tolist()
         return [
             ActionDecision(
-                action=action[i].item(),
-                log_prob=log_probability[i].item(),
-                value=values[i].item(),
+                action=int(action_values[i]),
+                log_prob=float(log_probability_values[i]),
+                value=float(value_values[i]),
                 illegal_actions_mask=illegal_actions_mask[i].clone(),
             )
             for i in range(len(games))

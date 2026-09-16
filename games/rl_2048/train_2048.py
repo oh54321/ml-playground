@@ -60,6 +60,7 @@ def print_loss_curves(epoch_stats: list[EpochStatistics]) -> None:
 
 def save_evaluation_plots(
     evaluation_history: dict[str, list[float]],
+    evaluation_iterations: list[int],
     output_dir: Path,
 ) -> None:
     """Save one score-over-training plot for each evaluation statistic."""
@@ -70,20 +71,19 @@ def save_evaluation_plots(
     import matplotlib.pyplot as plt
 
     plot_details = (
-        ("mean", "Mean evaluation score", "evaluation_mean_score.png"),
-        ("median", "Median evaluation score", "evaluation_median_score.png"),
-        ("best", "Best evaluation game score", "evaluation_best_score.png"),
-        ("worst", "Worst evaluation game score", "evaluation_worst_score.png"),
+        ("mean", "Mean evaluation score", "evaluation_mean_score.png", "Score (points)"),
+        ("median", "Median evaluation score", "evaluation_median_score.png", "Score (points)"),
+        ("best", "Best evaluation game score", "evaluation_best_score.png", "Score (points)"),
+        ("worst", "Worst evaluation game score", "evaluation_worst_score.png", "Score (points)"),
+        ("mean_moves", "Mean evaluation game length", "evaluation_mean_moves.png", "Moves"),
     )
-    iterations = list(range(1, len(evaluation_history["mean"]) + 1))
-
-    for metric, title, filename in plot_details:
+    for metric, title, filename, y_label in plot_details:
         figure, axis = plt.subplots(figsize=(8, 5))
-        axis.plot(iterations, evaluation_history[metric], marker="o")
+        axis.plot(evaluation_iterations, evaluation_history[metric], marker="o")
         axis.set_title(title)
         axis.set_xlabel("Outer training iteration")
-        axis.set_ylabel("Score (points)")
-        axis.set_xticks(iterations)
+        axis.set_ylabel(y_label)
+        axis.set_xticks(evaluation_iterations)
         axis.set_ylim(bottom=0)
         axis.grid(True, alpha=0.3)
         figure.tight_layout()
@@ -149,41 +149,129 @@ def save_checkpoint(
 
 
 @torch.no_grad()
-def save_completed_game(ppo: PPO, seed: int, output_path: Path | None = None) -> tuple[int, int, str]:
-    """Play a separate game greedily to completion and return its raw board trace."""
-    game = Game2048(seed=seed)
-    trace = [f"Evaluation game seed: {seed}"]
-    steps = 0
+def save_completed_games(
+    ppo: PPO,
+    seeds: list[int],
+    trace_output_dir: Path | None = None,
+) -> tuple[
+    list[int],
+    list[int],
+    tuple[int, int, int, str],
+    tuple[int, int, int, str],
+]:
+    """Evaluate seeded games together, batching policy inference over active games."""
+    if not seeds:
+        raise ValueError("Must evaluate at least one game")
 
-    while not game.done:
-        state = game.current_state()
-        legal_actions = game.legal_actions()
-        decision = ppo.generate_next_actions([game], deterministic=True)[0]
-        result = game.step(decision.action)
-        assert result.action_applied, "The policy selected an illegal action during evaluation"
+    game_numbers = list(range(1, len(seeds) + 1))
+    seeds_by_number = dict(zip(game_numbers, seeds))
+    games = {
+        game_number: Game2048(seed=seed)
+        for game_number, seed in seeds_by_number.items()
+    }
+    active_game_numbers = game_numbers.copy()
+    steps_by_game = {game_number: 0 for game_number in game_numbers}
+    traces_by_game = {
+        game_number: [f"Evaluation game seed: {seeds_by_number[game_number]}"]
+        for game_number in game_numbers
+    }
+    results_by_game: dict[int, tuple[int, int]] = {}
+    best_game: tuple[int, int, int, str] | None = None
+    worst_game: tuple[int, int, int, str] | None = None
+    best_game_number: int | None = None
+    worst_game_number: int | None = None
 
-        trace.extend(
-            [
-                f"Step {steps}",
-                f"Board before move:\n{state}",
-                "Legal actions: " + ", ".join(game.action_name(legal_action) for legal_action in legal_actions),
-                f"Selected action: {game.action_name(decision.action)}",
-                f"Reward: {result.reward}",
+    while active_game_numbers:
+        active_games = [games[game_number] for game_number in active_game_numbers]
+        decisions = ppo.generate_next_actions(active_games, deterministic=True)
+        illegal_actions_by_game = torch.stack(
+            [decision.illegal_actions_mask for decision in decisions]
+        ).tolist()
+        next_active_game_numbers = []
+
+        for game_number, game, decision, illegal_actions in zip(
+            active_game_numbers,
+            active_games,
+            decisions,
+            illegal_actions_by_game,
+            strict=True,
+        ):
+            state = game.current_state()
+            result = game.step(decision.action)
+            assert result.action_applied, "The policy selected an illegal action during evaluation"
+
+            step_number = steps_by_game[game_number]
+            legal_actions = [
+                action
+                for action, is_illegal in enumerate(illegal_actions)
+                if not is_illegal
             ]
-        )
-        steps += 1
+            traces_by_game[game_number].extend(
+                [
+                    f"Step {step_number}",
+                    f"Board before move:\n{state}",
+                    "Legal actions: " + ", ".join(
+                        game.action_name(action) for action in legal_actions
+                    ),
+                    f"Selected action: {game.action_name(decision.action)}",
+                    f"Reward: {result.reward}",
+                ]
+            )
+            steps_by_game[game_number] += 1
 
-    trace.extend(
-        [
-            f"Final board:\n{game.current_state()}",
-            f"Final score: {game.total_score}",
-            f"Total steps: {steps}",
-        ]
-    )
-    trace_text = "\n\n".join(trace) + "\n"
-    if output_path is not None:
-        output_path.write_text(trace_text, encoding="utf-8")
-    return int(game.total_score), steps, trace_text
+            if not result.terminated:
+                next_active_game_numbers.append(game_number)
+                continue
+
+            steps = steps_by_game[game_number]
+            score = int(game.total_score)
+            traces_by_game[game_number].extend(
+                [
+                    f"Final board:\n{game.current_state()}",
+                    f"Final score: {score}",
+                    f"Total steps: {steps}",
+                ]
+            )
+            trace_text = "\n\n".join(traces_by_game.pop(game_number)) + "\n"
+            seed = seeds_by_number[game_number]
+            game_result = (score, steps, seed, trace_text)
+            results_by_game[game_number] = (score, steps)
+
+            if trace_output_dir is not None:
+                game_dir = trace_output_dir / f"game_{game_number:02d}"
+                game_dir.mkdir(parents=True, exist_ok=True)
+                (game_dir / "trace.txt").write_text(trace_text, encoding="utf-8")
+
+            if (
+                best_game is None
+                or score > best_game[0]
+                or (
+                    score == best_game[0]
+                    and best_game_number is not None
+                    and game_number < best_game_number
+                )
+            ):
+                best_game = game_result
+                best_game_number = game_number
+            if (
+                worst_game is None
+                or score < worst_game[0]
+                or (
+                    score == worst_game[0]
+                    and worst_game_number is not None
+                    and game_number < worst_game_number
+                )
+            ):
+                worst_game = game_result
+                worst_game_number = game_number
+            del games[game_number]
+
+        active_game_numbers = next_active_game_numbers
+
+    assert best_game is not None and worst_game is not None
+    scores = [results_by_game[game_number][0] for game_number in game_numbers]
+    moves = [results_by_game[game_number][1] for game_number in game_numbers]
+    return scores, moves, worst_game, best_game
 
 
 def main() -> None:
@@ -224,6 +312,10 @@ def main() -> None:
         print_timestamps=True,
     )
     num_outer_iterations = 20
+    evaluation_interval = 1  # Evaluate every k outer iterations; set to 5 for longer runs.
+    evaluation_seed = 67890  # Independent, fixed seed stream for evaluation games.
+    if evaluation_interval < 1:
+        raise ValueError("evaluation_interval must be at least 1")
     device = select_device()
     torch.manual_seed(ppo_config.seed)
     resnet_config = ResNetConfig(
@@ -253,10 +345,22 @@ def main() -> None:
     num_evaluation_games = 100
     save_evaluation_traces = False
     best_mean_score = float("-inf")
-    evaluation_history = {"mean": [], "median": [], "best": [], "worst": []}
+    evaluation_history = {
+        "mean": [],
+        "median": [],
+        "best": [],
+        "worst": [],
+        "mean_moves": [],
+    }
+    evaluation_iterations = []
     evaluation_output_dir.mkdir(parents=True, exist_ok=True)
     run_summary_path = evaluation_output_dir / "summary.txt"
-    run_summary_path.write_text("PPO 2048 evaluation summary\n\n", encoding="utf-8")
+    run_summary_path.write_text(
+        "PPO 2048 evaluation summary\n"
+        f"Training seed: {ppo_config.seed}\n"
+        f"Evaluation seed base: {evaluation_seed}\n\n",
+        encoding="utf-8",
+    )
     raw_summary_path = evaluation_output_dir / "raw_summary.txt"
     with raw_summary_path.open("w", encoding="utf-8") as raw_summary_file:
         with redirect_stdout(_Tee(sys.stdout, raw_summary_file)):
@@ -268,32 +372,25 @@ def main() -> None:
                 print("=" * 72)
                 epoch_stats = ppo.run_outer_iteration()
                 print_loss_curves(epoch_stats)
+                if outer_iteration % evaluation_interval != 0:
+                    print(
+                        "Skipping evaluation; next evaluation is every "
+                        f"{evaluation_interval} outer iterations."
+                    )
+                    continue
                 print_timestamp("Starting evaluation games.", ppo_config.print_timestamps)
                 was_training = model.training
                 model.eval()
                 outer_evaluation_dir = evaluation_output_dir / f"outer_iteration_{outer_iteration:04d}"
-                scores = []
-                moves = []
-                worst_game: tuple[int, int, int, str] | None = None
-                best_game: tuple[int, int, int, str] | None = None
-                for game_number in range(1, num_evaluation_games + 1):
-                    evaluation_seed = ppo_config.seed + game_number
-                    trace_path = None
-                    if save_evaluation_traces:
-                        game_dir = outer_evaluation_dir / f"game_{game_number:02d}"
-                        game_dir.mkdir(parents=True, exist_ok=True)
-                        trace_path = game_dir / "trace.txt"
-                    score, steps, trace_text = save_completed_game(ppo, evaluation_seed, trace_path)
-                    scores.append(score)
-                    moves.append(steps)
-                    game_result = (score, steps, evaluation_seed, trace_text)
-                    if worst_game is None or score < worst_game[0]:
-                        worst_game = game_result
-                    if best_game is None or score > best_game[0]:
-                        best_game = game_result
-
+                scores, moves, worst_game, best_game = save_completed_games(
+                    ppo,
+                    [
+                        evaluation_seed + game_number
+                        for game_number in range(1, num_evaluation_games + 1)
+                    ],
+                    trace_output_dir=outer_evaluation_dir if save_evaluation_traces else None,
+                )
                 scores.sort()
-                assert worst_game is not None and best_game is not None
                 outer_evaluation_dir.mkdir(parents=True, exist_ok=True)
                 (outer_evaluation_dir / "worst_game.txt").write_text(worst_game[3], encoding="utf-8")
                 (outer_evaluation_dir / "best_game.txt").write_text(best_game[3], encoding="utf-8")
@@ -304,7 +401,13 @@ def main() -> None:
                 evaluation_history["median"].append(median_score)
                 evaluation_history["best"].append(best_game[0])
                 evaluation_history["worst"].append(worst_game[0])
-                save_evaluation_plots(evaluation_history, evaluation_output_dir)
+                evaluation_history["mean_moves"].append(mean_moves)
+                evaluation_iterations.append(outer_iteration)
+                save_evaluation_plots(
+                    evaluation_history,
+                    evaluation_iterations,
+                    evaluation_output_dir,
+                )
                 if mean_score > best_mean_score:
                     best_mean_score = mean_score
                     save_checkpoint(
