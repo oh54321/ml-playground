@@ -3,6 +3,10 @@ from algorithms.ppo import EpochStatistics, GradientStatistics, PPO, PPOConfig
 from contextlib import redirect_stdout
 from dataclasses import asdict, dataclass
 from games.rl_2048.agent import ResNet, ResNetConfig
+from games.rl_2048.plot_training_diagnostics import (
+    save_evaluation_plots,
+    save_training_diagnostic_plots,
+)
 from datetime import datetime
 import io
 import os
@@ -30,6 +34,10 @@ class _Tee(io.TextIOBase):
 
     def flush(self) -> None:
         for stream in self.streams:
+            # A stream can close before the Tee object is finalized during
+            # interpreter shutdown.  Ignore that cleanup-only case.
+            if getattr(stream, "closed", False):
+                continue
             stream.flush()
 
 
@@ -109,39 +117,6 @@ def print_outer_iteration_header(outer_iteration: int) -> None:
     print("=" * 72)
     print(f"Outer iteration {outer_iteration}")
     print("=" * 72)
-
-
-def save_evaluation_plots(
-    evaluation_history: dict[str, list[float]],
-    evaluation_iterations: list[int],
-    output_dir: Path,
-) -> None:
-    """Save one score-over-training plot for each evaluation statistic."""
-    os.environ.setdefault("MPLCONFIGDIR", str(Path(tempfile.gettempdir()) / "matplotlib"))
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    plot_details = (
-        ("mean", "Mean evaluation score", "evaluation_mean_score.png", "Score (points)"),
-        ("median", "Median evaluation score", "evaluation_median_score.png", "Score (points)"),
-        ("best", "Best evaluation game score", "evaluation_best_score.png", "Score (points)"),
-        ("worst", "Worst evaluation game score", "evaluation_worst_score.png", "Score (points)"),
-        ("mean_moves", "Mean evaluation game length", "evaluation_mean_moves.png", "Moves"),
-    )
-    for metric, title, filename, y_label in plot_details:
-        figure, axis = plt.subplots(figsize=(8, 5))
-        axis.plot(evaluation_iterations, evaluation_history[metric], marker="o")
-        axis.set_title(title)
-        axis.set_xlabel("Outer training iteration")
-        axis.set_ylabel(y_label)
-        axis.set_xticks(evaluation_iterations)
-        axis.set_ylim(bottom=0)
-        axis.grid(True, alpha=0.3)
-        figure.tight_layout()
-        figure.savefig(output_dir / filename, dpi=150)
-        plt.close(figure)
 
 
 def select_device() -> torch.device:
@@ -444,7 +419,7 @@ def main() -> None:
         gamma=1.0,
         gae_lambda=0.95,
         clip_epsilon=0.2,
-        value_coefficient=0.05,
+        value_coefficient=0.1,
         entropy_coefficient=0.01,
         update_epochs=5,
         num_parallel_games=16,
@@ -453,7 +428,7 @@ def main() -> None:
         mini_batch_size=1024,
         seed=12345,
         reward_multiplier=0.01,
-        value_transform="identity",
+        value_transform="signed_sqrt1p",
         denominator_epsilon=1e-8,
         gradient_clip_norm=None,
         print_moves=False,
@@ -462,6 +437,7 @@ def main() -> None:
     num_outer_iterations = 200
     evaluation_interval = 5  # Evaluate every k outer iterations; set to 5 for longer runs.
     evaluation_seed = 67890  # Independent, fixed seed stream for evaluation games.
+    run_suffix = "signed_sqrt1p_rerun"  # Optional experiment label appended after the timestamp.
     if evaluation_interval < 1:
         raise ValueError("evaluation_interval must be at least 1")
     device = select_device()
@@ -489,7 +465,10 @@ def main() -> None:
     )
     evaluation_output_root = Path("artifacts") / "ppo_2048"
     run_timestamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S_%f")
-    evaluation_output_dir = evaluation_output_root / f"run_{run_timestamp}"
+    run_name = f"run_{run_timestamp}"
+    if run_suffix:
+        run_name += f"_{run_suffix}"
+    evaluation_output_dir = evaluation_output_root / run_name
     evaluation = EvaluationRun(
         output_dir=evaluation_output_dir,
         seed_base=evaluation_seed,
@@ -520,9 +499,14 @@ def main() -> None:
                 print_outer_iteration_header(outer_iteration)
                 epoch_stats = ppo.run_outer_iteration()
                 scheduler.step()
+                print(f"  learning rate: {optimizer.param_groups[0]['lr']:.8e}")
                 print_loss_curves(epoch_stats)
                 print_value_diagnostics(epoch_stats)
                 print_gradient_diagnostics(ppo.last_gradient_statistics)
+                print(
+                    "  policy KL vs previous outer iteration: "
+                    f"{ppo.last_outer_iteration_policy_kl:.6f}"
+                )
                 if outer_iteration % evaluation_interval == 0:
                     evaluate_and_report(
                         ppo,
@@ -538,6 +522,11 @@ def main() -> None:
                         f"Skipping evaluation at outer iteration {outer_iteration}; "
                         f"evaluation interval is {evaluation_interval}."
                     )
+    save_training_diagnostic_plots(
+        raw_summary_path,
+        evaluation_output_dir,
+        run_summary_path,
+    )
 
 
 if __name__ == "__main__":

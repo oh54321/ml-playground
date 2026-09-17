@@ -47,7 +47,7 @@ class PPOConfig:
     max_episode_steps: int
     mini_batch_size: int
     reward_multiplier: float
-    value_transform: Literal["identity", "signed_log1p"]
+    value_transform: Literal["identity", "signed_log1p", "signed_sqrt1p"]
     denominator_epsilon: float
     gradient_clip_norm: float | None
     seed: int
@@ -103,7 +103,7 @@ class PPO():
         config: PPOConfig,
         game_factory: Callable[[int], Game],
     ):
-        if config.value_transform not in ("identity", "signed_log1p"):
+        if config.value_transform not in ("identity", "signed_log1p", "signed_sqrt1p"):
             raise ValueError(f"Unsupported value transform: {config.value_transform}")
         if config.num_parallel_games <= 0:
             raise ValueError("num_parallel_games must be positive")
@@ -133,6 +133,7 @@ class PPO():
             for seed in seeds
         ]
         self.game_steps = [0 for _ in self.games]
+        self.last_outer_iteration_policy_kl: float | None = None
 
     def device(self) -> torch.device:
         return next(self.model.parameters()).device
@@ -155,13 +156,24 @@ class PPO():
         """Map raw values to the space predicted by the value head."""
         if self.config.value_transform == "identity":
             return value
-        return torch.sign(value) * torch.log1p(torch.abs(value))
+        magnitude = torch.abs(value)
+        if self.config.value_transform == "signed_log1p":
+            transformed_magnitude = torch.log1p(magnitude)
+        else:
+            # Smooth square-root compression with finite slope at zero.
+            transformed_magnitude = torch.sqrt(1 + magnitude) - 1
+        return torch.sign(value) * transformed_magnitude
 
     def _untransform_predicted_value(self, transformed_value: torch.Tensor) -> torch.Tensor:
         """Map a value-head output back to raw reward units for GAE."""
         if self.config.value_transform == "identity":
             return transformed_value
-        return torch.sign(transformed_value) * torch.expm1(torch.abs(transformed_value))
+        magnitude = torch.abs(transformed_value)
+        if self.config.value_transform == "signed_log1p":
+            untransformed_magnitude = torch.expm1(magnitude)
+        else:
+            untransformed_magnitude = (1 + magnitude).square() - 1
+        return torch.sign(transformed_value) * untransformed_magnitude
 
     def _steps_to_tensor(
         self,
@@ -545,14 +557,59 @@ class PPO():
             value_target=value_target
         )
 
+    @torch.no_grad()
+    def _policy_log_probabilities(
+        self,
+        steps: List[PolicyRolloutInformation],
+    ) -> torch.Tensor:
+        """Return masked action log-probabilities for a fixed state batch."""
+        if not steps:
+            raise ValueError("Cannot evaluate policy probabilities for an empty batch")
+        actor_critic_output: ActorCriticOutput = self.model(
+            self._state_batch_tensor([step.state for step in steps])
+        )
+        illegal_actions_mask = torch.stack(
+            [step.legal_actions_mask for step in steps],
+            dim=0,
+        ).to(device=self.device(), dtype=torch.bool)
+        masked_logits = actor_critic_output.action_logits.masked_fill(
+            illegal_actions_mask,
+            -torch.inf,
+        )
+        return F.log_softmax(masked_logits, dim=-1)
+
+    @staticmethod
+    def _forward_policy_kl(
+        old_log_probabilities: torch.Tensor,
+        new_log_probabilities: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute KL(old || new) while ignoring identically masked actions."""
+        old_probabilities = old_log_probabilities.exp()
+        old_log_probabilities = old_log_probabilities.masked_fill(
+            ~torch.isfinite(old_log_probabilities),
+            0.0,
+        )
+        new_log_probabilities = new_log_probabilities.masked_fill(
+            ~torch.isfinite(new_log_probabilities),
+            0.0,
+        )
+        return (
+            old_probabilities
+            * (old_log_probabilities - new_log_probabilities)
+        ).sum(dim=-1).mean()
+
     # Outer iteration loop of PPO
     # Collects the policy rollout, then runs epochs reusing the rollout information
     def run_outer_iteration(self) -> List[EpochStatistics]:
         self._print_timestamp("Outer iteration starting; collecting rollouts.")
         policy_rollout_information_list, advantage_mean, advantage_std = self.collect_batched_information()
+        old_policy_log_probabilities = self._policy_log_probabilities(
+            policy_rollout_information_list,
+        )
         self._print_timestamp("Rollouts collected; starting PPO updates.")
         epoch_stats = []
         self.last_gradient_statistics = None
+        self.last_outer_iteration_policy_kl = None
         self._print_timestamp(f"PPO update epoch 0/{self.config.update_epochs}.")
         for epoch in range(1, self.config.update_epochs + 1):
             epoch_stats.append(
@@ -565,5 +622,12 @@ class PPO():
             )
             if epoch % 10 == 0:
                 self._print_timestamp(f"PPO update epoch {epoch}/{self.config.update_epochs} complete.")
+        new_policy_log_probabilities = self._policy_log_probabilities(
+            policy_rollout_information_list,
+        )
+        self.last_outer_iteration_policy_kl = self._forward_policy_kl(
+            old_policy_log_probabilities,
+            new_policy_log_probabilities,
+        ).item()
         self._print_timestamp("Outer iteration complete.")
         return epoch_stats
