@@ -522,6 +522,18 @@ def main() -> None:
                         f"Skipping evaluation at outer iteration {outer_iteration}; "
                         f"evaluation interval is {evaluation_interval}."
                     )
+    if evaluation.iterations:
+        save_checkpoint(
+            evaluation_output_dir / "final.pt",
+            model,
+            optimizer,
+            ppo_config,
+            resnet_config,
+            evaluation.iterations[-1],
+            evaluation.history["mean"][-1],
+            evaluation.history["median"][-1],
+            evaluation.history["mean_moves"][-1],
+        )
     save_training_diagnostic_plots(
         raw_summary_path,
         evaluation_output_dir,
