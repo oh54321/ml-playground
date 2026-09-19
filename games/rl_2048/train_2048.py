@@ -456,7 +456,7 @@ def main() -> None:
     )
     model = ResNet(resnet_config).to(device)
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
-    scheduler = ExponentialLR(optimizer, 0.995)
+    scheduler = ExponentialLR(optimizer, 0.999)
     ppo = PPO(
         model,
         optimizer,
