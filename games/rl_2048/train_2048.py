@@ -419,7 +419,7 @@ def main() -> None:
         gamma=1.0,
         gae_lambda=0.95,
         clip_epsilon=0.2,
-        value_coefficient=0.1,
+        value_coefficient=0.003,
         entropy_coefficient=0.01,
         update_epochs=5,
         num_parallel_games=16,
@@ -428,30 +428,30 @@ def main() -> None:
         mini_batch_size=1024,
         seed=12345,
         reward_multiplier=0.01,
-        value_transform="signed_sqrt1p",
+        value_transform="identity",
         denominator_epsilon=1e-8,
         gradient_clip_norm=None,
         print_moves=False,
         print_timestamps=True,
     )
-    num_outer_iterations = 200
-    evaluation_interval = 5  # Evaluate every k outer iterations; set to 5 for longer runs.
+    num_outer_iterations = 2000
+    evaluation_interval = 10  # Evaluate every k outer iterations; set to 5 for longer runs.
     evaluation_seed = 67890  # Independent, fixed seed stream for evaluation games.
-    run_suffix = "signed_sqrt1p_rerun"  # Optional experiment label appended after the timestamp.
+    run_suffix = "bigger_model"  # Optional experiment label appended after the timestamp.
     if evaluation_interval < 1:
         raise ValueError("evaluation_interval must be at least 1")
     device = select_device()
     torch.manual_seed(ppo_config.seed)
     resnet_config = ResNetConfig(
         in_channels=1,
-        n_channels=16,
-        blocks=3,
+        n_channels=32,
+        blocks=8,
         height=4,
         width=4,
         output_dim=4,
-        head_channels=16,
+        head_channels=32,
         kernel_size=3,
-        block_layers=2,
+        block_layers=4,
         include_groupnorm=True,
     )
     model = ResNet(resnet_config).to(device)
