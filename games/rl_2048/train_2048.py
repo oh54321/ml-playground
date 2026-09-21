@@ -405,7 +405,9 @@ def main() -> None:
     #     clip_epsilon=0.25,
     #     value_coefficient=0.5,
     #     entropy_coefficient=0.1,
-    #     update_epochs=100,
+    #     min_update_epochs=100,
+    #     max_update_epochs=100,
+    #     target_kl=0.02,
     #     num_parallel_games=20,
     #     steps_per_game_per_rollout=250,
     #     max_episode_steps=2**20,
@@ -421,11 +423,13 @@ def main() -> None:
         clip_epsilon=0.2,
         value_coefficient=0.003,
         entropy_coefficient=0.01,
-        update_epochs=5,
-        num_parallel_games=16,
+        min_update_epochs=1,
+        max_update_epochs=8,
+        target_kl=0.02,
+        num_parallel_games=32,
         steps_per_game_per_rollout=1024,
         max_episode_steps=2**20,
-        mini_batch_size=1024,
+        mini_batch_size=4096,
         seed=12345,
         reward_multiplier=0.01,
         value_transform="identity",
@@ -434,10 +438,10 @@ def main() -> None:
         print_moves=False,
         print_timestamps=True,
     )
-    num_outer_iterations = 2000
+    num_outer_iterations = 1000
     evaluation_interval = 10  # Evaluate every k outer iterations; set to 5 for longer runs.
     evaluation_seed = 67890  # Independent, fixed seed stream for evaluation games.
-    run_suffix = "bigger_model"  # Optional experiment label appended after the timestamp.
+    run_suffix = "bigger_model_lr_3e-4_minibatch_4096_parallel_32_adaptive"  # Optional experiment label appended after the timestamp.
     if evaluation_interval < 1:
         raise ValueError("evaluation_interval must be at least 1")
     device = select_device()
@@ -451,11 +455,11 @@ def main() -> None:
         output_dim=4,
         head_channels=32,
         kernel_size=3,
-        block_layers=4,
+        block_layers=2,
         include_groupnorm=True,
     )
     model = ResNet(resnet_config).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=1e-3)
+    optimizer = optim.Adam(model.parameters(), lr=3e-4)
     scheduler = ExponentialLR(optimizer, 0.999)
     ppo = PPO(
         model,
@@ -500,6 +504,7 @@ def main() -> None:
                 epoch_stats = ppo.run_outer_iteration()
                 scheduler.step()
                 print(f"  learning rate: {optimizer.param_groups[0]['lr']:.8e}")
+                print(f"  PPO update epochs used: {len(epoch_stats)}")
                 print_loss_curves(epoch_stats)
                 print_value_diagnostics(epoch_stats)
                 print_gradient_diagnostics(ppo.last_gradient_statistics)

@@ -41,7 +41,9 @@ class PPOConfig:
     clip_epsilon: float
     value_coefficient: float
     entropy_coefficient: float
-    update_epochs: int
+    min_update_epochs: int
+    max_update_epochs: int
+    target_kl: float
     num_parallel_games: int
     steps_per_game_per_rollout: int
     max_episode_steps: int
@@ -111,6 +113,12 @@ class PPO():
             raise ValueError("steps_per_game_per_rollout must be positive")
         if config.max_episode_steps <= 0:
             raise ValueError("max_episode_steps must be positive")
+        if config.min_update_epochs <= 0:
+            raise ValueError("min_update_epochs must be positive")
+        if config.max_update_epochs < config.min_update_epochs:
+            raise ValueError("max_update_epochs must be at least min_update_epochs")
+        if config.target_kl <= 0:
+            raise ValueError("target_kl must be positive")
         if config.gradient_clip_norm is not None and config.gradient_clip_norm <= 0:
             raise ValueError("gradient_clip_norm must be positive when provided")
 
@@ -610,18 +618,33 @@ class PPO():
         epoch_stats = []
         self.last_gradient_statistics = None
         self.last_outer_iteration_policy_kl = None
-        self._print_timestamp(f"PPO update epoch 0/{self.config.update_epochs}.")
-        for epoch in range(1, self.config.update_epochs + 1):
-            epoch_stats.append(
-                self.run_epoch(
-                    policy_rollout_information_list,
-                    advantage_mean,
-                    advantage_std,
-                    measure_gradient_diagnostics=epoch == 1,
-                )
+        self._print_timestamp(
+            f"PPO update epoch 0/{self.config.max_update_epochs}."
+        )
+
+        for epoch in range(1, self.config.max_update_epochs + 1):
+            current_epoch_stats = self.run_epoch(
+                policy_rollout_information_list,
+                advantage_mean,
+                advantage_std,
+                measure_gradient_diagnostics=epoch == 1,
             )
+            epoch_stats.append(current_epoch_stats)
             if epoch % 10 == 0:
-                self._print_timestamp(f"PPO update epoch {epoch}/{self.config.update_epochs} complete.")
+                self._print_timestamp(
+                    f"PPO update epoch {epoch}/{self.config.max_update_epochs} complete."
+                )
+            if (
+                epoch > self.config.min_update_epochs
+                and current_epoch_stats.approximate_kl > self.config.target_kl
+            ):
+                self._print_timestamp(
+                    "Stopping PPO updates early: "
+                    f"approximate KL {current_epoch_stats.approximate_kl:.6f} "
+                    f"exceeded target {self.config.target_kl:.6f} "
+                    f"after {epoch} epochs."
+                )
+                break
         new_policy_log_probabilities = self._policy_log_probabilities(
             policy_rollout_information_list,
         )

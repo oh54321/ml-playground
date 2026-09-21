@@ -91,6 +91,164 @@ def _find_game_seed(summary_path: Path, iteration: int, game_kind: str) -> tuple
     return int(match.group(3)), int(match.group(1))
 
 
+def _parse_evaluation_trace(trace_path: Path) -> dict:
+    """Parse a saved deterministic evaluation trace into replay data."""
+    text = trace_path.read_text(encoding="utf-8")
+    seed_match = re.search(r"Evaluation game seed: (\d+)", text)
+    score_match = re.search(r"Final score: (\d+)", text)
+    steps_match = re.search(r"Total steps: (\d+)", text)
+    if seed_match is None or score_match is None or steps_match is None:
+        raise ValueError(f"Trace is missing summary fields: {trace_path}")
+
+    step_pattern = re.compile(
+        r"Step (?P<step>\d+)\n\n"
+        r"Board before move:\nState2048\(\n(?P<board>.*?)\n\)\n\n"
+        r"Legal actions: (?P<legal>.*?)\n\n"
+        r"Selected action: (?P<action>left|up|right|down)\n\n"
+        r"Reward: (?P<reward>-?\d+)",
+        flags=re.DOTALL,
+    )
+    action_ids = {name: index for index, name in enumerate(ACTION_NAMES)}
+    steps = []
+    total_score = 0
+    for match in step_pattern.finditer(text):
+        rows = [
+            [int(value) for value in re.findall(r"-?\d+", row)]
+            for row in match.group("board").splitlines()
+        ]
+        if len(rows) != 4 or any(len(row) != 4 for row in rows):
+            raise ValueError(f"Invalid board in trace: {trace_path}")
+        reward = int(match.group("reward"))
+        total_score += reward
+        legal_actions = [action_ids[name] for name in match.group("legal").split(", ")]
+        action_name = match.group("action")
+        steps.append(
+            {
+                "step": int(match.group("step")),
+                "board": rows,
+                "legal_actions": legal_actions,
+                "action": action_ids[action_name],
+                "action_name": action_name,
+                "reward": reward,
+                "total_score": total_score,
+            }
+        )
+    if len(steps) != int(steps_match.group(1)):
+        raise ValueError(
+            f"Trace contains {len(steps)} steps but reports {steps_match.group(1)}: {trace_path}"
+        )
+    if total_score != int(score_match.group(1)):
+        raise ValueError(
+            f"Trace rewards sum to {total_score} but reports {score_match.group(1)}: {trace_path}"
+        )
+    return {
+        "seed": int(seed_match.group(1)),
+        "final_score": int(score_match.group(1)),
+        "steps": steps,
+        "trace_path": str(trace_path),
+        "trace_only": True,
+    }
+
+
+def _render_trace_html(report: dict, output_path: Path) -> None:
+    """Render an exact replay from a saved evaluation trace."""
+    report_json = json.dumps(report, separators=(",", ":"))
+    title = html.escape(
+        f"2048 game replay — score {report['final_score']} — seed {report['seed']}"
+    )
+    document = f'''<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title}</title>
+<style>
+body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 24px; color: #202124; background: #f7f7f7; }}
+h1 {{ font-size: 22px; margin: 0 0 8px; }}
+.muted {{ color: #666; margin-bottom: 18px; }}
+.controls {{ display: flex; gap: 12px; align-items: center; margin: 12px 0 20px; }}
+button, input {{ font: inherit; }}
+button {{ padding: 7px 12px; }}
+#stepSlider {{ flex: 1; }}
+.layout {{ display: grid; grid-template-columns: 360px minmax(300px, 1fr); gap: 22px; align-items: start; }}
+.panel {{ background: white; border: 1px solid #ddd; padding: 16px; }}
+.board {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; background: #bbada0; padding: 7px; }}
+.tile {{ aspect-ratio: 1; display: grid; place-items: center; font-weight: 700; font-size: 20px; border-radius: 4px; color: #776e65; }}
+.metric-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 8px 16px; margin-top: 14px; }}
+.metric-label {{ color: #666; font-size: 12px; }}
+.metric-value {{ font-variant-numeric: tabular-nums; font-size: 17px; }}
+@media (max-width: 760px) {{ .layout {{ grid-template-columns: 1fr; }} }}
+</style>
+</head>
+<body>
+<h1>{title}</h1>
+<div class="muted">Exact replay from the saved iteration 1620 evaluation trace. This replay preserves the original actions and boards; it does not recompute model activations.</div>
+<div class="controls">
+  <button id="previous">Previous</button>
+  <input id="stepSlider" type="range" min="0" max="0" value="0">
+  <button id="next">Next</button>
+  <span id="stepLabel"></span>
+</div>
+<div class="layout">
+  <section class="panel">
+    <div id="board" class="board"></div>
+  </section>
+  <section class="panel">
+    <div id="metrics" class="metric-grid"></div>
+  </section>
+</div>
+<script id="replay-data" type="application/json">{report_json}</script>
+<script>
+const report = JSON.parse(document.getElementById('replay-data').textContent);
+const steps = report.steps;
+const slider = document.getElementById('stepSlider');
+slider.max = Math.max(steps.length - 1, 0);
+const tileColors = {{0:'#cdc1b4',2:'#eee4da',4:'#ede0c8',8:'#f2b179',16:'#f59563',32:'#f67c5f',64:'#f65e3b',128:'#edcf72',256:'#edcc61',512:'#edc850',1024:'#edc53f',2048:'#edc22e'}};
+function tileColor(value) {{ return tileColors[value] || '#3c3a32'; }}
+function render(index) {{
+  index = Math.max(0, Math.min(index, steps.length - 1));
+  slider.value = index;
+  const step = steps[index];
+  document.getElementById('board').innerHTML = step.board.flat().map(value => {{
+    const color = tileColor(value);
+    const textColor = value >= 8 ? '#f9f6f2' : '#776e65';
+    return `<div class="tile" style="background:${{color}};color:${{textColor}}">${{value === 0 ? '' : value}}</div>`;
+  }}).join('');
+  const legal = step.legal_actions.map(action => ['left','up','right','down'][action]).join(', ');
+  const values = [
+    ['move', `${{index + 1}} / ${{steps.length}}`],
+    ['score after move', step.total_score],
+    ['action', step.action_name],
+    ['reward', step.reward],
+    ['legal moves', legal],
+    ['final score', report.final_score],
+  ];
+  document.getElementById('metrics').innerHTML = values.map(([label, value]) => `<div><div class="metric-label">${{label}}</div><div class="metric-value">${{value}}</div></div>`).join('');
+  document.getElementById('stepLabel').textContent = `move ${{index + 1}} / ${{steps.length}}`;
+}}
+slider.addEventListener('input', event => render(Number(event.target.value)));
+document.getElementById('previous').addEventListener('click', () => render(Number(slider.value) - 1));
+document.getElementById('next').addEventListener('click', () => render(Number(slider.value) + 1));
+document.addEventListener('keydown', event => {{ if (event.key === 'ArrowLeft') render(Number(slider.value) - 1); if (event.key === 'ArrowRight') render(Number(slider.value) + 1); }});
+render(0);
+</script>
+</body>
+</html>
+'''
+    output_path.write_text(document, encoding="utf-8")
+
+
+def inspect_trace(trace_path: Path, output_dir: Path | None = None) -> Path:
+    report = _parse_evaluation_trace(trace_path)
+    if output_dir is None:
+        output_dir = trace_path.parent.parent / "best_ever_trace_inspection"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "inspection.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    html_path = output_dir / "replay.html"
+    _render_trace_html(report, html_path)
+    return html_path
+
+
 def replay_game(
     model: ResNet,
     checkpoint: dict,
@@ -322,13 +480,19 @@ def inspect_game(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("run_dir", type=Path)
+    parser.add_argument("run_dir", type=Path, nargs="?")
     parser.add_argument("--checkpoint", type=Path, default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--game", choices=("worst", "best"), default="worst")
     parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument("--trace", type=Path, default=None)
     args = parser.parse_args()
-    html_path = inspect_game(args.run_dir, args.checkpoint, args.seed, args.game, args.output)
+    if args.trace is not None:
+        html_path = inspect_trace(args.trace, args.output)
+    else:
+        if args.run_dir is None:
+            parser.error("run_dir is required unless --trace is provided")
+        html_path = inspect_game(args.run_dir, args.checkpoint, args.seed, args.game, args.output)
     print(f"Wrote {html_path}")
 
 
