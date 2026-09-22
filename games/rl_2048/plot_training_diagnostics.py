@@ -248,7 +248,7 @@ def _parse_raw_summary(path: Path) -> list[dict[str, object]]:
                 current["advantage_std"] = float(match.group(2))
                 continue
             match = re.search(
-                r"shared trunk gradient norms: policy=([-+0-9.eE]+), value=([-+0-9.eE]+), entropy=([-+0-9.eE]+)",
+                r"(?:shared trunk|separate trunks) gradient norms: policy=([-+0-9.eE]+), value=([-+0-9.eE]+), entropy=([-+0-9.eE]+)",
                 line,
             )
             if match:
@@ -264,7 +264,7 @@ def _parse_raw_summary(path: Path) -> list[dict[str, object]]:
                 current["gradient_cosine"] = float(match.group(1))
             if match:
                 continue
-            match = re.search(r"relative shared trunk parameter update: ([-+0-9.eE]+)", line)
+            match = re.search(r"relative (?:shared trunk|separate trunks) parameter update: ([-+0-9.eE]+)", line)
             if match:
                 current["parameter_update"] = float(match.group(1))
                 continue
@@ -354,7 +354,7 @@ def save_training_diagnostic_plots(
         ("training_advantage_std.png", "Raw advantage standard deviation", "Advantage", "advantage_std"),
         ("training_value_policy_gradient_ratio.png", "Value-to-policy gradient ratio", "Value / policy", "value_policy_ratio"),
         ("training_gradient_cosine_similarity.png", "Policy/value gradient cosine similarity", "Cosine similarity", "gradient_cosine"),
-        ("training_parameter_update.png", "Relative shared-trunk parameter update", "Relative update", "parameter_update"),
+        ("training_parameter_update.png", "Relative trunk parameter update", "Relative update", "parameter_update"),
         ("training_policy_kl_between_iterations.png", "Policy KL between consecutive outer iterations", "KL divergence", "policy_kl_between_iterations"),
     ):
         values = _series(records, key)
@@ -379,7 +379,7 @@ def save_training_diagnostic_plots(
         if len(values) == len(iterations):
             gradient_series.append((label, values, color))
     if gradient_series:
-        save_line_plot(output_dir / "training_gradient_norms.png", iterations, gradient_series, "Shared-trunk gradient norms", y_label="Gradient norm")
+        save_line_plot(output_dir / "training_gradient_norms.png", iterations, gradient_series, "Trunk gradient norms", y_label="Gradient norm")
 
     learning_rates = _series(records, "learning_rate")
     if len(learning_rates) != len(iterations):

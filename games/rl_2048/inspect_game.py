@@ -30,9 +30,9 @@ class ActivationRecorder:
     def __init__(self, model: ResNet) -> None:
         self.activations: dict[str, torch.Tensor] = {}
         self.handles = [
-            model.trunk.register_forward_hook(self._save("trunk")),
-            model.trunk.stem.register_forward_hook(self._save("stem")),
-            model.trunk.body.register_forward_hook(self._save("body")),
+            model.policy_trunk.register_forward_hook(self._save("trunk")),
+            model.policy_trunk.stem.register_forward_hook(self._save("stem")),
+            model.policy_trunk.body.register_forward_hook(self._save("body")),
         ]
 
     def _save(self, name: str):
@@ -359,7 +359,7 @@ button {{ padding: 7px 12px; }}
 </head>
 <body>
 <h1>{title}</h1>
-<div class="muted">Use the slider or arrow buttons to inspect the deterministic policy at every move. Activation maps are the final 16-channel trunk output.</div>
+<div class="muted">Use the slider or arrow buttons to inspect the deterministic policy at every move. Activation maps show the final policy-trunk output (shared with the critic only in shared-trunk models).</div>
 <div class="controls">
   <button id="previous">Previous</button>
   <input id="stepSlider" type="range" min="0" max="0" value="0">

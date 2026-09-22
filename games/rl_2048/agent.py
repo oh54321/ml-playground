@@ -113,6 +113,9 @@ class ResNetConfig:
     kernel_size: int = 3
     block_layers: int = 2
     include_groupnorm: bool = True
+    # With separate trunks, n_channels and blocks apply to EACH network.
+    # True preserves the architecture and state-dict keys of old checkpoints.
+    shared_trunk: bool = True
 
 @dataclass(frozen=True)
 class ActorCriticOutput:
@@ -124,9 +127,30 @@ class ResNet(nn.Module):
     def __init__(self, config: ResNetConfig) -> None:
         super().__init__()
         self.config = config
-        self.trunk = self.create_trunk()
+        if config.shared_trunk:
+            self.trunk = self.create_trunk()
+        else:
+            self.actor_trunk = self.create_trunk()
+            self.critic_trunk = self.create_trunk()
         self.action_head = self.create_head(self.config.output_dim)
         self.value_head = self.create_head(1)
+
+    @property
+    def policy_trunk(self) -> nn.Sequential:
+        """The trunk producing action features, for activation inspection."""
+        return self.trunk if self.config.shared_trunk else self.actor_trunk
+
+    def representation_parameters(self) -> Iterator[nn.Parameter]:
+        """Parameters of the shared trunk or the union of independent trunks.
+
+        Heads are excluded to preserve the scope of existing PPO diagnostics.
+        In separate mode, policy/value gradient cosine is structurally zero.
+        """
+        if self.config.shared_trunk:
+            yield from self.trunk.parameters()
+        else:
+            yield from self.actor_trunk.parameters()
+            yield from self.critic_trunk.parameters()
 
     def create_stem(self) -> nn.Module:
         module_dict = OrderedDict()
@@ -174,7 +198,11 @@ class ResNet(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> ActorCriticOutput:
-        trunk_output = self.trunk(x)
-        action_logits = self.action_head(trunk_output)
-        value = self.value_head(trunk_output).squeeze(dim=-1)
+        if self.config.shared_trunk:
+            actor_features = critic_features = self.trunk(x)
+        else:
+            actor_features = self.actor_trunk(x)
+            critic_features = self.critic_trunk(x)
+        action_logits = self.action_head(actor_features)
+        value = self.value_head(critic_features).squeeze(dim=-1)
         return ActorCriticOutput(action_logits=action_logits, value=value)

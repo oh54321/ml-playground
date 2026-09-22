@@ -91,11 +91,12 @@ def print_value_diagnostics(epoch_stats: list[EpochStatistics]) -> None:
 def print_gradient_diagnostics(
     gradient_statistics: GradientStatistics | None,
 ) -> None:
-    """Print loss-gradient diagnostics for the shared actor-critic trunk."""
+    """Print loss-gradient diagnostics over the model's trunk parameters."""
     if gradient_statistics is None:
         return
+    trunk_label = "shared trunk" if gradient_statistics.shared_trunk else "separate trunks"
     print(
-        "  shared trunk gradient norms: "
+        f"  {trunk_label} gradient norms: "
         f"policy={gradient_statistics.policy_norm:.4f}, "
         f"value={gradient_statistics.value_norm:.4f}, "
         f"entropy={gradient_statistics.entropy_norm:.4f}"
@@ -107,9 +108,11 @@ def print_gradient_diagnostics(
         f"{gradient_statistics.policy_value_cosine_similarity:.4f}"
     )
     print(
-        "  relative shared trunk parameter update: "
+        f"  relative {trunk_label} parameter update: "
         f"{gradient_statistics.relative_parameter_update_size:.6e}"
     )
+    if not gradient_statistics.shared_trunk:
+        print("  Policy/value cosine is structurally zero: no shared parameters.")
 
 
 def print_outer_iteration_header(outer_iteration: int) -> None:
@@ -441,15 +444,19 @@ def main() -> None:
     num_outer_iterations = 1000
     evaluation_interval = 10  # Evaluate every k outer iterations; set to 5 for longer runs.
     evaluation_seed = 67890  # Independent, fixed seed stream for evaluation games.
-    run_suffix = "bigger_model_lr_3e-4_minibatch_4096_parallel_32_adaptive"  # Optional experiment label appended after the timestamp.
+    run_suffix = "bigger_model_lr_3e-4_minibatch_4096_parallel_32_adaptive_no_shared_trunk"  # Optional experiment label appended after the timestamp.
     if evaluation_interval < 1:
         raise ValueError("evaluation_interval must be at least 1")
     device = select_device()
     torch.manual_seed(ppo_config.seed)
+    # Shared: 153,573 parameters. Separate: 153,925 (+0.23%, extra stem).
+    # In separate mode each network gets half the residual blocks.
+    # Set True to restore the previous 32-channel, 8-block shared model.
+    shared_trunk = False
     resnet_config = ResNetConfig(
         in_channels=1,
         n_channels=32,
-        blocks=8,
+        blocks=8 if shared_trunk else 4,
         height=4,
         width=4,
         output_dim=4,
@@ -457,8 +464,10 @@ def main() -> None:
         kernel_size=3,
         block_layers=2,
         include_groupnorm=True,
+        shared_trunk=shared_trunk,
     )
     model = ResNet(resnet_config).to(device)
+    parameter_count = sum(parameter.numel() for parameter in model.parameters())
     optimizer = optim.Adam(model.parameters(), lr=3e-4)
     scheduler = ExponentialLR(optimizer, 0.999)
     ppo = PPO(
@@ -469,7 +478,11 @@ def main() -> None:
     )
     evaluation_output_root = Path("artifacts") / "ppo_2048"
     run_timestamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S_%f")
-    run_name = f"run_{run_timestamp}"
+    architecture = "shared_trunk" if resnet_config.shared_trunk else "separate_trunks"
+    run_name = (
+        f"run_{run_timestamp}_{architecture}"
+        f"_c{resnet_config.n_channels}_b{resnet_config.blocks}"
+    )
     if run_suffix:
         run_name += f"_{run_suffix}"
     evaluation_output_dir = evaluation_output_root / run_name
@@ -499,6 +512,8 @@ def main() -> None:
     with raw_summary_path.open("w", encoding="utf-8") as raw_summary_file:
         with redirect_stdout(_Tee(sys.stdout, raw_summary_file)):
             print(f"Training smoke test on {device}.")
+            print(f"Model config: {asdict(resnet_config)}")
+            print(f"Total trainable parameters: {parameter_count:,}")
             for outer_iteration in range(1, num_outer_iterations + 1):
                 print_outer_iteration_header(outer_iteration)
                 epoch_stats = ppo.run_outer_iteration()

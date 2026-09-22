@@ -87,7 +87,7 @@ class EpochStatistics:
 
 @dataclass(frozen=True)
 class GradientStatistics:
-    """Gradient diagnostics for the shared actor-critic representation."""
+    """Gradient diagnostics over the shared trunk or both independent trunks."""
 
     policy_norm: float
     value_norm: float
@@ -95,6 +95,7 @@ class GradientStatistics:
     value_to_policy_ratio: float
     policy_value_cosine_similarity: float
     relative_parameter_update_size: float = 0.0
+    shared_trunk: bool = True
 
 
 class PPO():
@@ -395,7 +396,7 @@ class PPO():
                 )
                 parameters_before_update = tuple(
                     parameter.detach().clone()
-                    for parameter in self.model.trunk.parameters()
+                    for parameter in self.model.representation_parameters()
                 )
             else:
                 parameters_before_update = None
@@ -412,7 +413,7 @@ class PPO():
                     self.last_gradient_statistics,
                     relative_parameter_update_size=self._relative_parameter_update_size(
                         parameters_before_update,
-                        tuple(self.model.trunk.parameters()),
+                        tuple(self.model.representation_parameters()),
                     ),
                 )
         all_value_targets = torch.cat(value_targets)
@@ -439,7 +440,7 @@ class PPO():
         gradients: tuple[torch.Tensor | None, ...],
         parameters: tuple[torch.nn.Parameter, ...],
     ) -> torch.Tensor:
-        """Flatten gradients while preserving one entry per shared parameter."""
+        """Flatten gradients while preserving one entry per parameter."""
         return torch.cat(
             [
                 (gradient.detach() if gradient is not None else torch.zeros_like(parameter)).reshape(-1)
@@ -451,32 +452,36 @@ class PPO():
         self,
         objectives: BatchObjectives,
     ) -> GradientStatistics:
-        """Measure weighted loss gradients on one minibatch's shared trunk."""
-        shared_parameters = tuple(self.model.trunk.parameters())
+        """Measure weighted gradients in the same trunk-parameter space.
+
+        Independent trunks have disjoint policy/value gradients: their cosine
+        is zero by construction, not evidence that their objectives agree.
+        """
+        trunk_parameters = tuple(self.model.representation_parameters())
         policy_loss = objectives.policy.mean()
         value_loss = self.config.value_coefficient * objectives.value.mean()
         entropy_loss = self.config.entropy_coefficient * objectives.negative_entropy.mean()
         policy_gradients = torch.autograd.grad(
             policy_loss,
-            shared_parameters,
+            trunk_parameters,
             retain_graph=True,
             allow_unused=True,
         )
         value_gradients = torch.autograd.grad(
             value_loss,
-            shared_parameters,
+            trunk_parameters,
             retain_graph=True,
             allow_unused=True,
         )
         entropy_gradients = torch.autograd.grad(
             entropy_loss,
-            shared_parameters,
+            trunk_parameters,
             retain_graph=True,
             allow_unused=True,
         )
-        policy_vector = self._gradient_vector(policy_gradients, shared_parameters)
-        value_vector = self._gradient_vector(value_gradients, shared_parameters)
-        entropy_vector = self._gradient_vector(entropy_gradients, shared_parameters)
+        policy_vector = self._gradient_vector(policy_gradients, trunk_parameters)
+        value_vector = self._gradient_vector(value_gradients, trunk_parameters)
+        entropy_vector = self._gradient_vector(entropy_gradients, trunk_parameters)
         policy_norm = torch.linalg.vector_norm(policy_vector).item()
         value_norm = torch.linalg.vector_norm(value_vector).item()
         entropy_norm = torch.linalg.vector_norm(entropy_vector).item()
@@ -493,6 +498,7 @@ class PPO():
             entropy_norm=entropy_norm,
             value_to_policy_ratio=value_to_policy_ratio,
             policy_value_cosine_similarity=policy_value_cosine_similarity,
+            shared_trunk=self.model.config.shared_trunk,
         )
 
     def _relative_parameter_update_size(
