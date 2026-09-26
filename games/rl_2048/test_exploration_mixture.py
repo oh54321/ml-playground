@@ -9,7 +9,7 @@ import torch
 
 from algorithms.ppo import PPO, PPOConfig
 from games.rl_2048.agent import ResNet, ResNetConfig
-from games.rl_2048.game import Game2048
+from games.rl_2048.environment.game_2048 import Game2048
 from games.rl_2048.train_2048 import linear_exploration_probability
 
 

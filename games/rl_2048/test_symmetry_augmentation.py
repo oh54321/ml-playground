@@ -4,15 +4,18 @@ from dataclasses import asdict
 import io
 import math
 import unittest
-from unittest.mock import patch
 
 import numpy as np
 import torch
 
 from algorithms.ppo import PPO, PPOConfig
-from core.game import SymmetryAugmentedGame, batch_current_states
 from games.rl_2048.agent import ResNet, ResNetConfig
-from games.rl_2048.game import Game2048, State2048, SYMMETRIES_2048
+from games.rl_2048.environment.game_2048 import Game2048, State2048
+from games.rl_2048.environment.symmetry_2048 import (
+    RECTANGULAR_SYMMETRY_SPECS,
+    SQUARE_SYMMETRY_SPECS,
+    transform_tensor,
+)
 
 
 TEST_BOARD = np.array(
@@ -30,13 +33,14 @@ class SymmetryDefinitionTests(unittest.TestCase):
     def test_all_square_symmetries_commute_with_moves(self):
         game = Game2048(seed=0)
         state = State2048(grid=TEST_BOARD)
-        self.assertEqual(len(game.symmetries()), 8)
+        game_symmetries = game.symmetries()
+        self.assertEqual(len(game_symmetries), len(SQUARE_SYMMETRY_SPECS))
 
-        for symmetry in SYMMETRIES_2048:
+        for index, symmetry in enumerate(game_symmetries):
             transformed_board = symmetry.transform_state(state).grid
             for canonical_action in range(4):
                 with self.subTest(
-                    symmetry=symmetry.name,
+                    symmetry=index,
                     canonical_action=canonical_action,
                 ):
                     transformed_action = symmetry.to_transformed_action(
@@ -61,9 +65,13 @@ class SymmetryDefinitionTests(unittest.TestCase):
 
     def test_rectangular_boards_expose_only_shape_preserving_symmetries(self):
         game = Game2048(height=3, width=4, seed=0)
+        expected_action_permutations = tuple(
+            spec.action_permutation
+            for spec in RECTANGULAR_SYMMETRY_SPECS
+        )
         self.assertEqual(
-            [symmetry.name for symmetry in game.symmetries()],
-            ["identity", "rotate_180", "flip_left_right", "flip_up_down"],
+            tuple(symmetry.action_permutation for symmetry in game.symmetries()),
+            expected_action_permutations,
         )
 
     def test_batched_encoding_matches_individual_encoding(self):
@@ -75,89 +83,16 @@ class SymmetryDefinitionTests(unittest.TestCase):
         actual = State2048.batch_to_tensor(states)
         self.assertTrue(torch.equal(actual, expected))
 
-
-class SymmetryAugmentedGameTests(unittest.TestCase):
-    def make_wrapped_game(
-        self,
-        seed: int,
-        *,
-        resample: str = "step",
-    ) -> SymmetryAugmentedGame:
-        base = Game2048(seed=seed)
-        base.state = State2048(grid=TEST_BOARD.copy())
-        base.done = False
-        base.total_score = 0
-        return SymmetryAugmentedGame(base, seed=seed, resample=resample)
-
-    def test_batched_current_states_match_individual_views(self):
-        games = [self.make_wrapped_game(100 + index) for index in range(8)]
-        for index, game in enumerate(games):
-            game.symmetry_index = index
-        expected = [game.current_state() for game in games]
-
-        with patch.object(
-            games[0].game,
-            "transform_states",
-            wraps=games[0].game.transform_states,
-        ) as transform_states:
-            actual = batch_current_states(games)
-
-        transform_states.assert_called_once()
-        for actual_state, expected_state in zip(actual, expected, strict=True):
-            np.testing.assert_array_equal(actual_state.grid, expected_state.grid)
-
-    def test_view_is_stable_until_step_and_action_maps_back(self):
-        seed = 777
-        wrapped = self.make_wrapped_game(seed)
-        reference = Game2048(seed=seed)
-        reference.state = State2048(grid=TEST_BOARD.copy())
-        reference.done = False
-        reference.total_score = 0
-
-        symmetry = wrapped.current_symmetry
-        first_view = wrapped.current_state()
-        second_view = wrapped.current_state()
-        np.testing.assert_array_equal(first_view.grid, second_view.grid)
-        first_view.grid[0, 0] = 0
-        np.testing.assert_array_equal(wrapped.game.state.grid, TEST_BOARD)
-
-        expected_legal = sorted(
-            symmetry.to_transformed_action(action)
-            for action in reference.legal_actions()
-        )
-        self.assertEqual(wrapped.legal_actions(), expected_legal)
-        canonical_action = reference.legal_actions()[0]
-        transformed_action = symmetry.to_transformed_action(canonical_action)
-        next_symmetry = (wrapped.symmetry_index + 1) % len(wrapped.symmetries())
-
-        with patch.object(
-            wrapped,
-            "_sample_symmetry_index",
-            return_value=next_symmetry,
-        ) as sample_symmetry:
-            wrapped_result = wrapped.step(transformed_action)
-        reference_result = reference.step(canonical_action)
-
-        sample_symmetry.assert_called_once()
-        self.assertEqual(wrapped.symmetry_index, next_symmetry)
-        self.assertEqual(wrapped_result.reward, reference_result.reward)
-        self.assertEqual(wrapped_result.terminated, reference_result.terminated)
-        self.assertEqual(wrapped_result.action_applied, reference_result.action_applied)
-        np.testing.assert_array_equal(wrapped.game.state.grid, reference.state.grid)
-        np.testing.assert_array_equal(
-            wrapped_result.next_state.grid,
-            wrapped.current_state().grid,
-        )
-
-    def test_episode_mode_keeps_one_symmetry_between_steps(self):
-        wrapped = self.make_wrapped_game(888, resample="episode")
-        symmetry_index = wrapped.symmetry_index
-        transformed_action = wrapped.legal_actions()[0]
-        with patch.object(wrapped, "_sample_symmetry_index") as sample_symmetry:
-            result = wrapped.step(transformed_action)
-        self.assertTrue(result.action_applied)
-        sample_symmetry.assert_not_called()
-        self.assertEqual(wrapped.symmetry_index, symmetry_index)
+    def test_tensor_transform_matches_the_game_state_transform(self):
+        state = State2048(grid=TEST_BOARD)
+        tensor = state.to_tensor().unsqueeze(0)
+        for index, (symmetry, spec) in enumerate(
+            zip(Game2048().symmetries(), SQUARE_SYMMETRY_SPECS, strict=True)
+        ):
+            with self.subTest(symmetry=index):
+                expected = symmetry.transform_state(state).to_tensor().unsqueeze(0)
+                actual = transform_tensor(tensor, spec.transform)
+                torch.testing.assert_close(actual, expected)
 
 
 class SymmetryPPOIntegrationTests(unittest.TestCase):
@@ -209,18 +144,12 @@ class SymmetryPPOIntegrationTests(unittest.TestCase):
             model,
             optimizer,
             config,
-            lambda seed: SymmetryAugmentedGame(
-                Game2048(seed=seed),
-                seed=seed,
-                resample="step",
-            ),
+            lambda seed: Game2048(seed=seed),
+            symmetry_augmentation="step",
         )
-
-        with patch("algorithms.ppo.batch_current_states", wraps=batch_current_states) as batch_states:
-            with unittest.mock.patch("sys.stdout", new=io.StringIO()):
-                statistics = ppo.run_outer_iteration()
-
-        self.assertGreaterEqual(batch_states.call_count, config.steps_per_game_per_rollout)
+        self.assertTrue(all(isinstance(game, Game2048) for game in ppo.games))
+        with unittest.mock.patch("sys.stdout", new=io.StringIO()):
+            statistics = ppo.run_outer_iteration()
         self.assertEqual(len(statistics), 1)
         self.assertTrue(
             all(math.isfinite(value) for value in asdict(statistics[0]).values())

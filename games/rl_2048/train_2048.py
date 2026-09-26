@@ -1,7 +1,6 @@
 from torch.optim.lr_scheduler import ExponentialLR
 from algorithms.ppo import EpochStatistics, GradientStatistics, PPO, PPOConfig
 from contextlib import redirect_stdout
-from core.game import SymmetryAugmentedGame
 from dataclasses import asdict, dataclass
 import argparse
 from games.rl_2048.agent import ResNet, ResNetConfig
@@ -21,7 +20,7 @@ import math
 import torch
 import torch.optim as optim
 
-from games.rl_2048.game import Game2048
+from games.rl_2048.environment.game_2048 import Game2048
 
 
 class _Tee(io.TextIOBase):
@@ -615,11 +614,8 @@ def main() -> None:
         model,
         optimizer,
         ppo_config,
-        game_factory=lambda seed: SymmetryAugmentedGame(
-            Game2048(seed=seed),
-            seed=seed,
-            resample=symmetry_augmentation,
-        ),
+        game_factory=lambda seed: Game2048(seed=seed),
+        symmetry_augmentation=symmetry_augmentation,
     )
     evaluation_output_root = Path("artifacts") / "ppo_2048"
     run_timestamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S_%f")

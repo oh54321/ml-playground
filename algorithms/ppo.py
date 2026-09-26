@@ -9,7 +9,9 @@ import torch
 import torch.nn.functional as F
 from torch.distributions import categorical
 
-from core.game import Game, State, StepResult, batch_current_states
+from core.game import Game, StepResult
+from core.game_symmetry import GameSymmetry
+from core.state import State
 from games.rl_2048.agent import ActorCriticOutput, ResNet
 
 
@@ -100,12 +102,15 @@ class GradientStatistics:
 
 
 class PPO():
+    _SYMMETRY_SEED_NAMESPACE = 0x53594D  # "SYM"
+
     def __init__(
         self,
         model: ResNet,
         optimizer: torch.optim.Optimizer,
         config: PPOConfig,
         game_factory: Callable[[int], Game],
+        symmetry_augmentation: Literal["step", "episode"] | None = None,
     ):
         if config.value_transform not in ("identity", "signed_log1p", "signed_sqrt1p"):
             raise ValueError(f"Unsupported value transform: {config.value_transform}")
@@ -123,6 +128,8 @@ class PPO():
             raise ValueError("target_kl must be positive")
         if config.gradient_clip_norm is not None and config.gradient_clip_norm <= 0:
             raise ValueError("gradient_clip_norm must be positive when provided")
+        if symmetry_augmentation not in (None, "step", "episode"):
+            raise ValueError("symmetry_augmentation must be None, 'step', or 'episode'")
 
         torch.manual_seed(config.seed)
 
@@ -130,6 +137,12 @@ class PPO():
         self.model: ResNet = model
         self.optimizer = optimizer
         self.rng = np.random.default_rng(config.seed)
+        self.symmetry_rng = np.random.default_rng(
+            np.random.SeedSequence(
+                [int(config.seed), self._SYMMETRY_SEED_NAMESPACE]
+            )
+        )
+        self.symmetry_augmentation = symmetry_augmentation
         self.last_gradient_statistics: GradientStatistics | None = None
 
         seeds = self.rng.integers(
@@ -142,11 +155,27 @@ class PPO():
             game_factory(int(seed))
             for seed in seeds
         ]
+        self.symmetry_indices: list[int | None] = [
+            self._sample_symmetry_index(game) if symmetry_augmentation else None
+            for game in self.games
+        ]
         self.game_steps = [0 for _ in self.games]
         self.last_outer_iteration_policy_kl: float | None = None
         # Fixed for a whole rollout + PPO update; the trainer may anneal it
         # between outer iterations.
         self.exploration_probability = 0.0
+
+    def _sample_symmetry_index(self, game: Game) -> int | None:
+        symmetries = game.symmetries()
+        if not symmetries:
+            return None
+        return int(self.symmetry_rng.integers(len(symmetries)))
+
+    def _symmetry_for_game(self, game_index: int) -> GameSymmetry | None:
+        symmetry_index = self.symmetry_indices[game_index]
+        if symmetry_index is None:
+            return None
+        return self.games[game_index].symmetries()[symmetry_index]
 
     def set_exploration_probability(self, probability: float) -> None:
         if not math.isfinite(probability) or not 0.0 <= probability < 1.0:
@@ -248,14 +277,20 @@ class PPO():
         games: List[Game],
         deterministic: bool = False,
         states: List[State] | None = None,
+        legal_actions: List[list[int]] | None = None,
     ) -> List[ActionDecision]:
         if not games:
             raise ValueError("Must evaluate at least one game")
         if states is None:
-            states = batch_current_states(games)
+            states = [game.current_state() for game in games]
         elif len(states) != len(games):
             raise ValueError("A supplied state batch must match the game batch")
-        legal_actions_by_game = [game.legal_actions() for game in games]
+        if legal_actions is None:
+            legal_actions_by_game = [game.legal_actions() for game in games]
+        else:
+            if len(legal_actions) != len(games):
+                raise ValueError("A supplied legal-action batch must match the game batch")
+            legal_actions_by_game = legal_actions
         legal_action_counts = torch.tensor(
             [len(legal_actions) for legal_actions in legal_actions_by_game],
             device=self.device(),
@@ -322,34 +357,78 @@ class PPO():
             [] for _ in range(self.config.num_parallel_games)
         ]
         for _ in range(self.config.steps_per_game_per_rollout):
-            states = [state.copy() for state in batch_current_states(self.games)]
+            # Games stay canonical; only the policy's state and action view is transformed.
+            symmetries = [
+                self._symmetry_for_game(index)
+                for index in range(len(self.games))
+            ]
+            states: list[State] = []
+            legal_actions_by_game: list[list[int]] = []
+            for game, symmetry in zip(self.games, symmetries, strict=True):
+                state = game.current_state()
+                legal_actions = game.legal_actions()
+                if symmetry is not None:
+                    state = symmetry.transform_state(state)
+                    legal_actions = sorted(
+                        symmetry.to_transformed_action(action)
+                        for action in legal_actions
+                    )
+                states.append(state.copy())
+                legal_actions_by_game.append(legal_actions)
             decisions: List[ActionDecision] = self.generate_next_actions(
                 self.games,
                 states=states,
+                legal_actions=legal_actions_by_game,
             )
             if self.config.print_moves:
                 for game_index, (game, state, decision) in enumerate(
-                    zip(self.games, states, decisions)
+                    zip(self.games, states, decisions, strict=True)
                 ):
+                    symmetry = symmetries[game_index]
+                    canonical_legal_actions = (
+                        [symmetry.to_canonical_action(action)
+                         for action in legal_actions_by_game[game_index]]
+                        if symmetry is not None
+                        else legal_actions_by_game[game_index]
+                    )
+                    selected_action = (
+                        symmetry.to_canonical_action(decision.action)
+                        if symmetry is not None
+                        else decision.action
+                    )
                     legal_action_names = ", ".join(
-                        game.action_name(legal_action)
-                        for legal_action in game.legal_actions()
+                        game.action_name(action) for action in canonical_legal_actions
                     )
                     print(f"Game {game_index} board:\n{state}")
                     print(
                         f"Legal actions: {legal_action_names}; selected action: "
-                        f"{game.action_name(decision.action)}"
+                        f"{game.action_name(selected_action)}"
                     )
             results: List[StepResult] = [
-                game.step(decision.action)
-                for game, decision in zip(self.games, decisions)
+                game.step(
+                    symmetry.to_canonical_action(decision.action)
+                    if symmetry is not None else decision.action
+                )
+                for game, decision, symmetry in zip(
+                    self.games, decisions, symmetries, strict=True
+                )
             ]
             assert all(result.action_applied for result in results), (
                 "If we selected an action from legal_actions, it should be applied"
             )
             for game_index, (rollout, state, decision, result) in enumerate(
-                zip(rollouts_by_game, states, decisions, results)
+                zip(rollouts_by_game, states, decisions, results, strict=True)
             ):
+                if self.symmetry_augmentation == "step":
+                    self.symmetry_indices[game_index] = self._sample_symmetry_index(
+                        self.games[game_index]
+                    )
+                next_symmetry = self._symmetry_for_game(game_index)
+                next_state = (
+                    next_symmetry.transform_state(result.next_state).copy()
+                    if next_symmetry is not None
+                    else result.next_state.copy()
+                )
                 game_steps = self.game_steps[game_index] + 1
                 truncated = (
                     not result.terminated
@@ -359,7 +438,7 @@ class PPO():
                     PolicyRolloutInformation(
                         state=state,
                         action=decision.action,
-                        next_state=result.next_state.copy(),
+                        next_state=next_state,
                         log_prob=decision.log_prob,
                         value=decision.value,
                         reward=result.reward * self.config.reward_multiplier,
@@ -373,6 +452,8 @@ class PPO():
                 if result.terminated or rollouts_by_game[game_index][-1].truncated:
                     game.reset(seed=int(self.rng.integers(0, 2**32)))
                     self.game_steps[game_index] = 0
+                    if self.symmetry_augmentation is not None:
+                        self.symmetry_indices[game_index] = self._sample_symmetry_index(game)
         # TODO: could maybe parallelize?
         for rollout in rollouts_by_game:
             gae = 0

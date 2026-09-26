@@ -1,10 +1,16 @@
-from functools import partial
 from typing import Sequence, Tuple
 
 import numpy as np
 import torch
 
-from core.game import Game, GameSymmetry, State, StepResult
+from core.game import Game, StepResult
+from core.game_symmetry import GameSymmetry
+from core.state import State
+from games.rl_2048.environment.symmetry_2048 import (
+    BoardTransform,
+    game_symmetries_for,
+    transform_array,
+)
 
 
 class State2048(State):
@@ -50,56 +56,10 @@ class State2048(State):
         return State2048(grid=self.grid.copy())
 
 
-def _transform_grids(grids: np.ndarray, operation: str) -> np.ndarray:
-    """Apply one square/rectangle symmetry over the final two array axes."""
-    if operation == "identity":
-        transformed = grids
-    elif operation == "rotate_ccw_90":
-        transformed = np.rot90(grids, 1, axes=(-2, -1))
-    elif operation == "rotate_180":
-        transformed = np.rot90(grids, 2, axes=(-2, -1))
-    elif operation == "rotate_ccw_270":
-        transformed = np.rot90(grids, 3, axes=(-2, -1))
-    elif operation == "flip_left_right":
-        transformed = np.flip(grids, axis=-1)
-    elif operation == "flip_up_down":
-        transformed = np.flip(grids, axis=-2)
-    elif operation == "transpose":
-        transformed = np.swapaxes(grids, -2, -1)
-    elif operation == "flip_anti_diagonal":
-        transformed = np.swapaxes(
-            np.flip(np.flip(grids, axis=-2), axis=-1),
-            -2,
-            -1,
-        )
-    else:
-        raise ValueError(f"Unknown 2048 symmetry operation: {operation}")
-    # Every transformed State2048 owns writable, positive-stride storage.
-    return np.array(transformed, dtype=np.int64, order="C", copy=True)
-
-
-def _transform_state(state: State, operation: str) -> State2048:
+def _transform_state(state: State, transform: BoardTransform) -> State2048:
     if not isinstance(state, State2048):
         raise TypeError("2048 symmetries require State2048 instances")
-    return State2048(grid=_transform_grids(state.grid, operation))
-
-
-SYMMETRIES_2048 = (
-    GameSymmetry("identity", partial(_transform_state, operation="identity"), (0, 1, 2, 3)),
-    GameSymmetry("rotate_ccw_90", partial(_transform_state, operation="rotate_ccw_90"), (3, 0, 1, 2)),
-    GameSymmetry("rotate_180", partial(_transform_state, operation="rotate_180"), (2, 3, 0, 1)),
-    GameSymmetry("rotate_ccw_270", partial(_transform_state, operation="rotate_ccw_270"), (1, 2, 3, 0)),
-    GameSymmetry("flip_left_right", partial(_transform_state, operation="flip_left_right"), (2, 1, 0, 3)),
-    GameSymmetry("flip_up_down", partial(_transform_state, operation="flip_up_down"), (0, 3, 2, 1)),
-    GameSymmetry("transpose", partial(_transform_state, operation="transpose"), (1, 0, 3, 2)),
-    GameSymmetry("flip_anti_diagonal", partial(_transform_state, operation="flip_anti_diagonal"), (3, 2, 1, 0)),
-)
-
-RECTANGULAR_SYMMETRIES_2048 = tuple(
-    symmetry
-    for symmetry in SYMMETRIES_2048
-    if symmetry.name in {"identity", "rotate_180", "flip_left_right", "flip_up_down"}
-)
+    return State2048(grid=transform_array(state.grid, transform))
 
 
 class Game2048(Game):
@@ -161,33 +121,10 @@ class Game2048(Game):
     def symmetries(self) -> tuple[GameSymmetry, ...]:
         # Quarter-turns and diagonal reflections swap dimensions, so rectangular
         # boards expose only the four transformations that preserve their shape.
-        if self.state.height == self.state.width:
-            return SYMMETRIES_2048
-        return RECTANGULAR_SYMMETRIES_2048
-
-    def transform_states(
-        self,
-        states: Sequence[State],
-        symmetry_indices: Sequence[int],
-    ) -> list[State]:
-        """Apply each requested transform in NumPy batches grouped by symmetry."""
-        if len(states) != len(symmetry_indices):
-            raise ValueError("States and symmetry indices must have equal lengths")
-        if not states:
-            return []
-        if not all(isinstance(state, State2048) for state in states):
-            raise TypeError("Game2048 can transform only State2048 instances")
-        grids = np.stack([state.grid for state in states], axis=0)
-        transformed = np.empty_like(grids)
-        symmetries = self.symmetries()
-        indices = np.asarray(symmetry_indices, dtype=np.int64)
-        if np.any(indices < 0) or np.any(indices >= len(symmetries)):
-            raise ValueError("A symmetry index is outside the available range")
-        for symmetry_index in np.unique(indices):
-            selected = indices == symmetry_index
-            operation = symmetries[int(symmetry_index)].name
-            transformed[selected] = _transform_grids(grids[selected], operation)
-        return [State2048(grid=grid) for grid in transformed]
+        return game_symmetries_for(
+            _transform_state,
+            square_board=self.state.height == self.state.width,
+        )
 
     def _simulate_move(
         self, grid: np.ndarray, action: int

@@ -17,7 +17,7 @@ import torch
 from games.rl_2048.debug_learning import (
     make_ppo, predictions, metrics, estimate, continuations, one_step_branches,
 )
-from games.rl_2048.game import Game2048, State2048
+from games.rl_2048.environment.game_2048 import Game2048, State2048
 from games.rl_2048.plot_training_diagnostics import _parse_raw_summary
 
 

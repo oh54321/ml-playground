@@ -11,31 +11,17 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from games.rl_2048.game import SYMMETRIES_2048
+from games.rl_2048.environment.symmetry_2048 import SQUARE_SYMMETRY_SPECS, transform_tensor
 
 
-NUM_SYMMETRIES = 8
+NUM_SYMMETRIES = len(SQUARE_SYMMETRY_SPECS)
 
 
 def transform(x: torch.Tensor, index: int) -> torch.Tensor:
-    """Apply the symmetry with the same index as ``SYMMETRIES_2048``."""
-    if index == 0:
-        return x
-    if index == 1:
-        return torch.rot90(x, 1, dims=(-2, -1))
-    if index == 2:
-        return torch.rot90(x, 2, dims=(-2, -1))
-    if index == 3:
-        return torch.rot90(x, 3, dims=(-2, -1))
-    if index == 4:
-        return torch.flip(x, dims=(-1,))
-    if index == 5:
-        return torch.flip(x, dims=(-2,))
-    if index == 6:
-        return x.transpose(-2, -1)
-    if index == 7:
-        return torch.flip(x, dims=(-2, -1)).transpose(-2, -1)
-    raise ValueError(f"Unknown D4 symmetry index: {index}")
+    """Apply the spatial transform at the matching D4 table index."""
+    if not 0 <= index < len(SQUARE_SYMMETRY_SPECS):
+        raise ValueError(f"Unknown D4 symmetry index: {index}")
+    return transform_tensor(x, SQUARE_SYMMETRY_SPECS[index].transform)
 
 
 def inverse_transform(x: torch.Tensor, index: int) -> torch.Tensor:
@@ -254,8 +240,11 @@ class D4ActionHead(_D4ScalarProbe):
         super().__init__(channels, height, width, hidden)
         # Each action maps to LEFT in two orientations; average those scores.
         self.register_buffer("to_left", torch.tensor([
-            [index for index, symmetry in enumerate(SYMMETRIES_2048)
-             if symmetry.action_permutation[action] == 0]
+            [
+                index
+                for index, symmetry in enumerate(SQUARE_SYMMETRY_SPECS)
+                if symmetry.action_permutation[action] == 0
+            ]
             for action in range(4)
         ], dtype=torch.long), persistent=False)
 

@@ -30,12 +30,16 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from games.rl_2048.agent import ResNet, ResNetConfig  # noqa: E402
-from games.rl_2048.game import Game2048, State2048, SYMMETRIES_2048  # noqa: E402
+from games.rl_2048.environment.game_2048 import Game2048, State2048  # noqa: E402
+from games.rl_2048.environment.symmetry_2048 import SQUARE_SYMMETRY_SPECS, transform_array  # noqa: E402
 
 
 ACTION_NAMES = ("left", "up", "right", "down")
 ActionMap = tuple[int, int, int, int]
-SYMMETRIES = SYMMETRIES_2048
+SYMMETRIES = SQUARE_SYMMETRY_SPECS
+SYMMETRY_LABELS = tuple(
+    symmetry.transform.name.lower() for symmetry in SYMMETRIES
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -198,7 +202,7 @@ def evaluate_symmetries(
     for state_index, state in enumerate(states):
         board = np.asarray(state["board"], dtype=np.int64)
         for symmetry_index, symmetry in enumerate(SYMMETRIES):
-            transformed = symmetry.transform_state(State2048(grid=board)).grid
+            transformed = transform_array(board, symmetry.transform)
             transformed_jobs.append(
                 (state_index, symmetry_index, transformed)
             )
@@ -216,7 +220,9 @@ def evaluate_symmetries(
             )
 
     per_state: list[dict] = []
-    metric_rows: dict[str, list[dict]] = {symmetry.name: [] for symmetry in SYMMETRIES}
+    metric_rows: dict[str, list[dict]] = {
+        label: [] for label in SYMMETRY_LABELS
+    }
     for state_index, state in enumerate(states):
         base_probs = np.asarray(state["base_probabilities"], dtype=float)
         base_action = int(state["base_action"])
@@ -246,13 +252,15 @@ def evaluate_symmetries(
                 "legal_actions": np.flatnonzero(legal_mask).tolist(),
                 "probabilities": probabilities.tolist(),
             }
-            state_result["symmetries"][symmetry.name] = row
-            metric_rows[symmetry.name].append(row)
+            label = SYMMETRY_LABELS[symmetry_index]
+            state_result["symmetries"][label] = row
+            metric_rows[label].append(row)
         per_state.append(state_result)
 
     summary: dict[str, dict] = {}
-    for symmetry in SYMMETRIES:
-        rows = metric_rows[symmetry.name]
+    for symmetry_index, symmetry in enumerate(SYMMETRIES):
+        label = SYMMETRY_LABELS[symmetry_index]
+        rows = metric_rows[label]
         inverse = inverse_action_map(symmetry.action_permutation)
         raw_counts = {name: 0 for name in ACTION_NAMES}
         mapped_back_counts = {name: 0 for name in ACTION_NAMES}
@@ -262,7 +270,7 @@ def evaluate_symmetries(
         for row in rows:
             transformed_action = ACTION_NAMES.index(row["actual_action"])
             mapped_back_counts[ACTION_NAMES[inverse[transformed_action]]] += 1
-        summary[symmetry.name] = {
+        summary[label] = {
             "states": len(rows),
             "mapped_action_match_rate": float(np.mean([row["mapped_action_match"] for row in rows])),
             "raw_same_direction_rate": float(np.mean([row["raw_same_direction"] for row in rows])),
@@ -297,10 +305,11 @@ def print_report(
     print("Original greedy actions: " + ", ".join(f"{name}={count}" for name, count in base_counts.items()))
     print()
     print("Symmetry results (mapped match should be high; raw same direction is bias):")
-    for symmetry in SYMMETRIES:
-        row = summary[symmetry.name]
+    for symmetry_index, _symmetry in enumerate(SYMMETRIES):
+        label = SYMMETRY_LABELS[symmetry_index]
+        row = summary[label]
         print(
-            f"  {symmetry.name:18} "
+            f"  {label:18} "
             f"mapped={row['mapped_action_match_rate']:.1%}  "
             f"raw_same={row['raw_same_direction_rate']:.1%}  "
             f"mean_max_prob_error={row['mean_max_probability_error']:.4f}  "

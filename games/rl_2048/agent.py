@@ -12,6 +12,7 @@ from games.rl_2048.d4 import (
     D4LiftConv,
     D4ResBlock,
     D4ValueHead,
+    NUM_SYMMETRIES as D4_NUM_SYMMETRIES,
     inverse_transform as _d4_inverse_transform,
     transform as _d4_transform,
 )
@@ -121,7 +122,7 @@ class D4ResidualStem(nn.Module):
     learn to use the symmetry path during training.
     """
 
-    NUM_SYMMETRIES = 8
+    NUM_SYMMETRIES = D4_NUM_SYMMETRIES
 
     def __init__(self, shared_stem: nn.Module, n_channels: int) -> None:
         super().__init__()

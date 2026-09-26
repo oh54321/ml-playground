@@ -19,7 +19,7 @@ from games.rl_2048.agent import (
     _d4_inverse_transform,
     _d4_transform,
 )
-from games.rl_2048.game import Game2048
+from games.rl_2048.environment.game_2048 import Game2048
 from games.rl_2048.inspect_game import ActivationRecorder
 from games.rl_2048.plot_training_diagnostics import _parse_raw_summary
 from games.rl_2048.train_2048 import print_gradient_diagnostics

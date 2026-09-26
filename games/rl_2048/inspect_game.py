@@ -18,7 +18,7 @@ import torch
 import torch.nn.functional as F
 
 from games.rl_2048.agent import ResNet, ResNetConfig
-from games.rl_2048.game import Game2048
+from games.rl_2048.environment.game_2048 import Game2048
 
 
 ACTION_NAMES = ("left", "up", "right", "down")

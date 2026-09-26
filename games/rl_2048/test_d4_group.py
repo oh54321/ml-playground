@@ -10,7 +10,6 @@ import torch
 from torch.nn import functional as F
 
 from algorithms.ppo import PPO, PPOConfig
-from core.game import SymmetryAugmentedGame
 from games.rl_2048.agent import ResNet, ResNetConfig
 from games.rl_2048.d4 import (
     D4GroupConv,
@@ -20,7 +19,8 @@ from games.rl_2048.d4 import (
     transform,
     transform_features,
 )
-from games.rl_2048.game import Game2048, State2048, SYMMETRIES_2048
+from games.rl_2048.environment.game_2048 import Game2048, State2048
+from games.rl_2048.environment.symmetry_2048 import SQUARE_SYMMETRY_SPECS
 
 
 CONFIG = ResNetConfig(
@@ -92,7 +92,7 @@ class D4GroupTests(unittest.TestCase):
         model = ResNet(CONFIG).to("mps")
         boards = torch.randn(2, 1, 4, 4, device="mps")
         original = model(boards)
-        for index, symmetry in enumerate(SYMMETRIES_2048):
+        for index, symmetry in enumerate(SQUARE_SYMMETRY_SPECS):
             transformed = model(transform(boards, index))
             expected = torch.empty_like(original.action_logits)
             for action, transformed_action in enumerate(symmetry.action_permutation):
@@ -116,7 +116,7 @@ class D4GroupTests(unittest.TestCase):
         boards = torch.randn(5, 1, 4, 4)
         with torch.no_grad():
             original = model(boards)
-            for index, symmetry in enumerate(SYMMETRIES_2048):
+            for index, symmetry in enumerate(SQUARE_SYMMETRY_SPECS):
                 transformed = model(transform(boards, index))
                 expected_logits = torch.empty_like(original.action_logits)
                 for action, transformed_action in enumerate(symmetry.action_permutation):
@@ -145,9 +145,8 @@ class D4GroupTests(unittest.TestCase):
         )
         ppo = PPO(
             model, optimizer, ppo_config,
-            lambda seed: SymmetryAugmentedGame(
-                Game2048(seed=seed), seed=seed, resample="step"
-            ),
+            lambda seed: Game2048(seed=seed),
+            symmetry_augmentation="step",
         )
         initial = model.actor_trunk.body.layer1.network[0].weight.detach().clone()
         with contextlib.redirect_stdout(io.StringIO()):
@@ -166,7 +165,7 @@ class D4GroupTests(unittest.TestCase):
             [16, 32, 64, 128],
         ]))
         game = Game2048(seed=0)
-        states = [symmetry.transform_state(board) for symmetry in SYMMETRIES_2048]
+        states = [symmetry.transform_state(board) for symmetry in Game2048().symmetries()]
         with torch.no_grad():
             logits = model(State2048.batch_to_tensor(states)).action_logits
         probabilities = []
@@ -176,7 +175,7 @@ class D4GroupTests(unittest.TestCase):
             mask = torch.ones(4, dtype=torch.bool)
             mask[legal] = False
             probabilities.append(torch.softmax(logits[row].masked_fill(mask, -torch.inf), 0))
-        for index, symmetry in enumerate(SYMMETRIES_2048):
+        for index, symmetry in enumerate(SQUARE_SYMMETRY_SPECS):
             expected = torch.empty_like(probabilities[0])
             for action, transformed_action in enumerate(symmetry.action_permutation):
                 expected[transformed_action] = probabilities[0][action]
