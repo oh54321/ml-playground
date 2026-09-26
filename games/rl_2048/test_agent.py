@@ -11,13 +11,17 @@ from unittest.mock import patch
 import torch
 
 from algorithms.ppo import PPO, PPOConfig
-from games.rl_2048.agent import (
-    ActorCriticOutput,
+from core.models.actor_critic import ActorCriticOutput
+from games.rl_2048.legacy_agent import model_from_legacy_config
+from core.models.conv_actor_critic import ConvActorCriticModel, ConvActorCriticConfig
+from core.models.legacy.d4_residual_adapter import (
+    D4ResidualAdapterActorCriticModel,
     D4ResidualStem,
-    ResNet,
-    ResNetConfig,
-    _d4_inverse_transform,
-    _d4_transform,
+)
+from core.symmetries.d4_transforms import (
+    D4_TRANSFORMS,
+    inverse_transform,
+    transform_tensor,
 )
 from games.rl_2048.environment.game_2048 import Game2048
 from games.rl_2048.inspect_game import ActivationRecorder
@@ -25,7 +29,7 @@ from games.rl_2048.plot_training_diagnostics import _parse_raw_summary
 from games.rl_2048.train_2048 import print_gradient_diagnostics
 
 
-BASE_CONFIG = ResNetConfig(
+BASE_CONFIG = ConvActorCriticConfig(
     in_channels=1, n_channels=8, blocks=1, height=4, width=4,
     output_dim=4, head_channels=8,
 )
@@ -49,7 +53,7 @@ class ActorCriticTests(unittest.TestCase):
         for shared in (True, False):
             with self.subTest(shared=shared):
                 config = replace(BASE_CONFIG, shared_trunk=shared)
-                model = ResNet(config)
+                model = ConvActorCriticModel(config)
                 output = model(inputs)
                 self.assertIsInstance(output, ActorCriticOutput)
                 self.assertEqual(output.action_logits.shape, (3, 4))
@@ -59,7 +63,7 @@ class ActorCriticTests(unittest.TestCase):
                 torch.save(dict(config=asdict(config), state=model.state_dict()), checkpoint)
                 checkpoint.seek(0)
                 loaded = torch.load(checkpoint, weights_only=True)
-                restored = ResNet(ResNetConfig(**loaded['config']))
+                restored = ConvActorCriticModel(ConvActorCriticConfig(**loaded['config']))
                 restored.load_state_dict(loaded['state'], strict=True)
                 self.assertTrue(torch.equal(restored(inputs).action_logits, output.action_logits))
                 self.assertTrue(torch.equal(restored(inputs).value, output.value))
@@ -67,7 +71,7 @@ class ActorCriticTests(unittest.TestCase):
     def test_legacy_config_and_shared_state_keys(self):
         legacy_config = asdict(BASE_CONFIG)
         del legacy_config['shared_trunk']
-        model = ResNet(ResNetConfig(**legacy_config))
+        model = model_from_legacy_config(legacy_config)
         self.assertTrue(model.config.shared_trunk)
         self.assertEqual(
             {key.split('.')[0] for key in model.state_dict()},
@@ -79,7 +83,7 @@ class ActorCriticTests(unittest.TestCase):
         self.assertTrue(torch.equal(model(inputs).value, model.value_head(features).squeeze(-1)))
 
     def test_independent_gradients_and_adam_updates(self):
-        model = ResNet(replace(BASE_CONFIG, shared_trunk=False))
+        model = ConvActorCriticModel(replace(BASE_CONFIG, shared_trunk=False))
         actor = tuple(model.actor_trunk.parameters()) + tuple(model.action_head.parameters())
         critic = tuple(model.critic_trunk.parameters()) + tuple(model.value_head.parameters())
         self.assertFalse({id(p) for p in actor} & {id(p) for p in critic})
@@ -113,26 +117,24 @@ class ActorCriticTests(unittest.TestCase):
     def test_parameter_budgets(self):
         baseline = replace(BASE_CONFIG, n_channels=32, blocks=8, head_channels=32)
         near = replace(baseline, shared_trunk=False, blocks=4)
-        count = lambda config: sum(p.numel() for p in ResNet(config).parameters())
+        count = lambda config: sum(p.numel() for p in ConvActorCriticModel(config).parameters())
         self.assertEqual(count(baseline), 153573)
         self.assertEqual(count(near), 153925)
-        budgeted_adapter = replace(
-            near,
-            head_channels=16,
-            symmetry_adapter=True,
-        )
-        self.assertEqual(count(budgeted_adapter), 153669)
+        budgeted_adapter = replace(near, head_channels=16)
+        adapter = D4ResidualAdapterActorCriticModel(budgeted_adapter)
+        self.assertEqual(sum(p.numel() for p in adapter.parameters()), 153669)
 
     def test_d4_residual_stem_is_batched_and_starts_as_identity_stem(self):
-        config = replace(BASE_CONFIG, symmetry_adapter=True)
-        model = ResNet(config)
+        model = D4ResidualAdapterActorCriticModel(BASE_CONFIG)
         stem = model.trunk._modules["stem"]
         self.assertIsInstance(stem, D4ResidualStem)
 
         inputs = torch.randn(3, 1, 4, 4)
-        for symmetry_index in range(stem.NUM_SYMMETRIES):
-            transformed = _d4_transform(inputs, symmetry_index)
-            recovered = _d4_inverse_transform(transformed, symmetry_index)
+        for symmetry in D4_TRANSFORMS:
+            transformed = transform_tensor(inputs, symmetry)
+            recovered = transform_tensor(
+                transformed, inverse_transform(symmetry)
+            )
             self.assertTrue(torch.equal(recovered, inputs))
 
         with torch.no_grad():
@@ -148,7 +150,7 @@ class ActorCriticTests(unittest.TestCase):
     def test_activation_recorder_uses_actor_features(self):
         for shared in (True, False):
             with self.subTest(shared=shared):
-                model = ResNet(replace(BASE_CONFIG, shared_trunk=shared))
+                model = ConvActorCriticModel(replace(BASE_CONFIG, shared_trunk=shared))
                 inputs = torch.randn(2, 1, 4, 4)
                 recorder = ActivationRecorder(model)
                 model(inputs)
@@ -176,7 +178,7 @@ class ActorCriticTests(unittest.TestCase):
         for model_config in presets:
             shared = model_config.shared_trunk
             with self.subTest(model_config=model_config):
-                model = ResNet(model_config)
+                model = ConvActorCriticModel(model_config)
                 optimizer = torch.optim.Adam(model.parameters(), lr=3e-4)
                 ppo = PPO(model, optimizer, config, lambda seed: Game2048(seed=seed))
                 initial = {name: p.detach().clone() for name, p in model.named_parameters()}

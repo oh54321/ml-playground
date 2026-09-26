@@ -6,10 +6,9 @@ import torch
 from core.environments.game import Game, StepResult
 from core.environments.game_symmetry import GameSymmetry
 from core.environments.state import State
+from core.symmetries.d4_transforms import BoardTransform, transform_array
 from games.rl_2048.environment.symmetry_2048 import (
-    BoardTransform,
     game_symmetries_for,
-    transform_array,
 )
 
 

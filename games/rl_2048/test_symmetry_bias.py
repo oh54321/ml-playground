@@ -31,7 +31,8 @@ if str(REPO_ROOT) not in sys.path:
 
 from games.rl_2048.agent import ResNet, ResNetConfig  # noqa: E402
 from games.rl_2048.environment.game_2048 import Game2048, State2048  # noqa: E402
-from games.rl_2048.environment.symmetry_2048 import SQUARE_SYMMETRY_SPECS, transform_array  # noqa: E402
+from core.symmetries.d4_transforms import transform_array  # noqa: E402
+from games.rl_2048.environment.symmetry_2048 import SQUARE_SYMMETRY_SPECS  # noqa: E402
 
 
 ACTION_NAMES = ("left", "up", "right", "down")

@@ -10,7 +10,7 @@ import unittest
 import numpy as np
 import torch
 
-from games.rl_2048.agent import ResNet, ResNetConfig
+from core.models.conv_actor_critic import ConvActorCriticModel, ConvActorCriticConfig
 from games.rl_2048.inspect_advantages import (
     FrozenAgent, branch_trials, choose_boards, compare_pair, confirmation_plan,
     evaluate, game_from_board, read_json, select, sha256, stream_seed,
@@ -22,8 +22,8 @@ DANGER_BOARD = [[16,32,64,256],[8,16,32,64],[4,8,16,8],[2,2,8,2]]
 
 
 def checkpoint(path, shared=False, transform='identity', value=2.):
-    cfg = ResNetConfig(1,4,1,4,4,4,head_channels=4,shared_trunk=shared)
-    model = ResNet(cfg)
+    cfg = ConvActorCriticConfig(1,4,1,4,4,4,head_channels=4,shared_trunk=shared)
+    model = ConvActorCriticModel(cfg)
     with torch.no_grad():
         for p in model.parameters():
             p.zero_()

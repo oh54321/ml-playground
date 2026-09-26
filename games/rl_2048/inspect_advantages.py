@@ -18,7 +18,8 @@ from statistics import NormalDist
 import numpy as np
 import torch
 
-from games.rl_2048.agent import ResNet, ResNetConfig
+from core.models.actor_critic import ActorCriticModel
+from games.rl_2048.legacy_agent import model_from_legacy_config
 from games.rl_2048.environment.game_2048 import Game2048, State2048
 
 
@@ -56,7 +57,7 @@ def sample_action(probabilities, rng) -> int:
 
 @dataclass(frozen=True)
 class FrozenAgent:
-    model: ResNet
+    model: ActorCriticModel
     gamma: float
     gae_lambda: float
     reward_multiplier: float
@@ -69,7 +70,7 @@ class FrozenAgent:
         # Only load trusted local checkpoints: existing checkpoint files include
         # optimizer/config objects and may require ordinary pickle loading.
         checkpoint = torch.load(path, map_location='cpu', weights_only=False)
-        model = ResNet(ResNetConfig(**checkpoint['resnet_config']))
+        model = model_from_legacy_config(checkpoint['resnet_config'])
         model.load_state_dict(checkpoint['model_state_dict'], strict=True)
         model.eval().requires_grad_(False)
         cfg = checkpoint['ppo_config']

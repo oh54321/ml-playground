@@ -12,7 +12,7 @@ from torch.distributions import categorical
 from core.environments.game import Game, StepResult
 from core.environments.game_symmetry import GameSymmetry
 from core.environments.state import State
-from games.rl_2048.agent import ActorCriticOutput, ResNet
+from core.models.actor_critic import ActorCriticModel, ActorCriticOutput
 
 
 @dataclass(frozen=True)
@@ -106,7 +106,7 @@ class PPO():
 
     def __init__(
         self,
-        model: ResNet,
+        model: ActorCriticModel,
         optimizer: torch.optim.Optimizer,
         config: PPOConfig,
         game_factory: Callable[[int], Game],
@@ -134,7 +134,7 @@ class PPO():
         torch.manual_seed(config.seed)
 
         self.config = config
-        self.model: ResNet = model
+        self.model: ActorCriticModel = model
         self.optimizer = optimizer
         self.rng = np.random.default_rng(config.seed)
         self.symmetry_rng = np.random.default_rng(
@@ -622,7 +622,11 @@ class PPO():
             entropy_norm=entropy_norm,
             value_to_policy_ratio=value_to_policy_ratio,
             policy_value_cosine_similarity=policy_value_cosine_similarity,
-            shared_trunk=self.model.config.shared_trunk,
+            shared_trunk=getattr(
+                self.model,
+                "has_shared_representation",
+                self.model.config.shared_trunk,
+            ),
         )
 
     def _relative_parameter_update_size(

@@ -8,13 +8,13 @@ import unittest
 import torch
 
 from algorithms.ppo import PPO, PPOConfig
-from games.rl_2048.agent import ResNet, ResNetConfig
+from core.models.conv_actor_critic import ConvActorCriticModel, ConvActorCriticConfig
 from games.rl_2048.environment.game_2048 import Game2048
 from games.rl_2048.train_2048 import linear_exploration_probability
 
 
 def small_ppo() -> PPO:
-    model = ResNet(ResNetConfig(
+    model = ConvActorCriticModel(ConvActorCriticConfig(
         in_channels=1, n_channels=8, blocks=1, height=4, width=4,
         output_dim=4, head_channels=8,
     ))

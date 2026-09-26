@@ -9,12 +9,12 @@ import numpy as np
 import torch
 
 from algorithms.ppo import PPO, PPOConfig
-from games.rl_2048.agent import ResNet, ResNetConfig
+from core.models.conv_actor_critic import ConvActorCriticModel, ConvActorCriticConfig
+from core.symmetries.d4_transforms import transform_tensor
 from games.rl_2048.environment.game_2048 import Game2048, State2048
 from games.rl_2048.environment.symmetry_2048 import (
     RECTANGULAR_SYMMETRY_SPECS,
     SQUARE_SYMMETRY_SPECS,
-    transform_tensor,
 )
 
 
@@ -107,8 +107,8 @@ class SymmetryPPOIntegrationTests(unittest.TestCase):
 
     def test_full_rollout_and_update(self):
         torch.manual_seed(123)
-        model = ResNet(
-            ResNetConfig(
+        model = ConvActorCriticModel(
+            ConvActorCriticConfig(
                 in_channels=1,
                 n_channels=8,
                 blocks=1,

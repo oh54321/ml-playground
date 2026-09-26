@@ -16,7 +16,7 @@ import numpy as np
 import torch
 
 from algorithms.ppo import PPO, PPOConfig
-from games.rl_2048.agent import ResNet, ResNetConfig
+from games.rl_2048.legacy_agent import model_from_legacy_config
 from games.rl_2048.environment.game_2048 import Game2048, State2048
 
 
@@ -26,7 +26,7 @@ def make_ppo(checkpoint, seed):
         config['min_update_epochs'] = config['max_update_epochs'] = config.pop('update_epochs')
         config['target_kl'] = .02
     config.update(seed=seed, print_timestamps=False)
-    model = ResNet(ResNetConfig(**checkpoint['resnet_config']))
+    model = model_from_legacy_config(checkpoint['resnet_config'])
     model.load_state_dict(checkpoint['model_state_dict'])
     optimizer = torch.optim.Adam(model.parameters())
     optimizer.load_state_dict(copy.deepcopy(checkpoint['optimizer_state_dict']))

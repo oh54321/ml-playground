@@ -17,7 +17,8 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
-from games.rl_2048.agent import ResNet, ResNetConfig
+from core.models.actor_critic import ActorCriticModel
+from games.rl_2048.legacy_agent import model_from_legacy_config
 from games.rl_2048.environment.game_2048 import Game2048
 
 
@@ -27,7 +28,7 @@ ACTION_NAMES = ("left", "up", "right", "down")
 class ActivationRecorder:
     """Capture selected intermediate tensors from a model forward pass."""
 
-    def __init__(self, model: ResNet) -> None:
+    def __init__(self, model: ActorCriticModel) -> None:
         self.activations: dict[str, torch.Tensor] = {}
         self.handles = [
             model.policy_trunk.register_forward_hook(self._save("trunk")),
@@ -47,9 +48,9 @@ class ActivationRecorder:
             handle.remove()
 
 
-def _load_checkpoint(checkpoint_path: Path, device: torch.device) -> tuple[ResNet, dict]:
+def _load_checkpoint(checkpoint_path: Path, device: torch.device) -> tuple[ActorCriticModel, dict]:
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    model = ResNet(ResNetConfig(**checkpoint["resnet_config"]))
+    model = model_from_legacy_config(checkpoint["resnet_config"])
     model.load_state_dict(checkpoint["model_state_dict"])
     model.to(device)
     model.eval()
@@ -250,7 +251,7 @@ def inspect_trace(trace_path: Path, output_dir: Path | None = None) -> Path:
 
 
 def replay_game(
-    model: ResNet,
+    model: ActorCriticModel,
     checkpoint: dict,
     seed: int,
     device: torch.device,

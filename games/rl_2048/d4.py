@@ -11,7 +11,8 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from games.rl_2048.environment.symmetry_2048 import SQUARE_SYMMETRY_SPECS, transform_tensor
+from core.symmetries.d4_transforms import transform_tensor
+from games.rl_2048.environment.symmetry_2048 import SQUARE_SYMMETRY_SPECS
 
 
 NUM_SYMMETRIES = len(SQUARE_SYMMETRY_SPECS)

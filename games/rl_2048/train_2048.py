@@ -3,7 +3,10 @@ from algorithms.ppo import EpochStatistics, GradientStatistics, PPO, PPOConfig
 from contextlib import redirect_stdout
 from dataclasses import asdict, dataclass
 import argparse
-from games.rl_2048.agent import ResNet, ResNetConfig
+from core.models.actor_critic import ActorCriticModel
+from core.models.conv_actor_critic import ConvActorCriticConfig
+from core.models.d4_conv_actor_critic import D4ConvActorCriticModel
+from core.models.legacy.d4_residual_adapter import D4ResidualAdapterActorCriticModel
 from games.rl_2048.plot_training_diagnostics import (
     save_evaluation_plots,
     save_training_diagnostic_plots,
@@ -21,6 +24,7 @@ import torch
 import torch.optim as optim
 
 from games.rl_2048.environment.game_2048 import Game2048
+from games.rl_2048.environment.symmetry_2048 import SQUARE_SYMMETRY_SPECS
 
 
 class _Tee(io.TextIOBase):
@@ -152,12 +156,23 @@ def print_timestamp(message: str, enabled: bool) -> None:
         print(f"[{timestamp}] {message}")
 
 
+def _legacy_model_config(
+    model: ActorCriticModel,
+    model_config: ConvActorCriticConfig,
+) -> dict:
+    """Keep writing the old checkpoint shape while supporting model classes."""
+    config = asdict(model_config)
+    config["symmetry_adapter"] = isinstance(model, D4ResidualAdapterActorCriticModel)
+    config["group_equivariant"] = isinstance(model, D4ConvActorCriticModel)
+    return config
+
+
 def save_checkpoint(
     output_path: Path,
-    model: ResNet,
+    model: ActorCriticModel,
     optimizer: optim.Optimizer,
     ppo_config: PPOConfig,
-    resnet_config: ResNetConfig,
+    model_config: ConvActorCriticConfig,
     outer_iteration: int,
     mean_score: float,
     median_score: float,
@@ -171,7 +186,7 @@ def save_checkpoint(
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "ppo_config": asdict(ppo_config),
-        "resnet_config": asdict(resnet_config),
+        "resnet_config": _legacy_model_config(model, model_config),
         "evaluation": {
             "mean_score": mean_score,
             "median_score": median_score,
@@ -201,11 +216,11 @@ def save_checkpoint(
 
 def warm_start_from_checkpoint(
     checkpoint_path: Path,
-    model: ResNet,
+    model: ActorCriticModel,
     optimizer: optim.Optimizer,
     scheduler: ExponentialLR,
     ppo_config: PPOConfig,
-    resnet_config: ResNetConfig,
+    model_config: ConvActorCriticConfig,
     symmetry_augmentation: str,
 ) -> tuple[int, dict | None]:
     """Restore compatible weights/optimizer and return the next iteration and schedule.
@@ -214,7 +229,7 @@ def warm_start_from_checkpoint(
     start rather than an exact continuation of the previous rollout stream.
     """
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
-    if checkpoint["resnet_config"] != asdict(resnet_config):
+    if checkpoint["resnet_config"] != _legacy_model_config(model, model_config):
         raise ValueError("Checkpoint model configuration does not match this run")
     if checkpoint["ppo_config"] != asdict(ppo_config):
         raise ValueError("Checkpoint PPO configuration does not match this run")
@@ -369,10 +384,10 @@ class EvaluationRun:
 
 def evaluate_and_report(
     ppo: PPO,
-    model: ResNet,
+    model: ActorCriticModel,
     optimizer: optim.Optimizer,
     ppo_config: PPOConfig,
-    resnet_config: ResNetConfig,
+    model_config: ConvActorCriticConfig,
     outer_iteration: int,
     evaluation: EvaluationRun,
 ) -> None:
@@ -416,7 +431,7 @@ def evaluate_and_report(
                 model,
                 optimizer,
                 ppo_config,
-                resnet_config,
+                model_config,
                 outer_iteration,
                 mean_score,
                 median_score,
@@ -540,7 +555,7 @@ def main() -> None:
     torch.manual_seed(ppo_config.seed)
     # Separate actor/critic trunks, as in the two comparison runs.
     shared_trunk = False
-    resnet_config = ResNetConfig(
+    model_config = ConvActorCriticConfig(
         in_channels=1,
         n_channels=64,
         blocks=8 if shared_trunk else 4,
@@ -554,10 +569,11 @@ def main() -> None:
         block_layers=2,
         include_groupnorm=True,
         shared_trunk=shared_trunk,
-        symmetry_adapter=False,
-        group_equivariant=True,
     )
-    model = ResNet(resnet_config).to(device)
+    action_permutations = {
+        spec.transform: spec.action_permutation for spec in SQUARE_SYMMETRY_SPECS
+    }
+    model = D4ConvActorCriticModel(model_config, action_permutations).to(device)
     parameter_count = sum(parameter.numel() for parameter in model.parameters())
     if not 135_000 <= parameter_count <= 145_000:
         raise ValueError(f"Expected about 140k parameters, got {parameter_count:,}")
@@ -568,7 +584,7 @@ def main() -> None:
     if args.warm_start_from is not None:
         first_outer_iteration, checkpoint_schedule = warm_start_from_checkpoint(
             args.warm_start_from, model, optimizer, scheduler,
-            ppo_config, resnet_config, symmetry_augmentation,
+            ppo_config, model_config, symmetry_augmentation,
         )
     reuse_schedule = (
         checkpoint_schedule is not None
@@ -619,10 +635,10 @@ def main() -> None:
     )
     evaluation_output_root = Path("artifacts") / "ppo_2048"
     run_timestamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S_%f")
-    architecture = "shared_trunk" if resnet_config.shared_trunk else "separate_trunks"
+    architecture = "shared_trunk" if model_config.shared_trunk else "separate_trunks"
     run_name = (
         f"run_{run_timestamp}_{architecture}"
-        f"_c{resnet_config.n_channels}_b{resnet_config.blocks}"
+        f"_c{model_config.n_channels}_b{model_config.blocks}"
         f"_symmetry_{symmetry_augmentation}"
     )
     if run_suffix:
@@ -662,7 +678,7 @@ def main() -> None:
     with raw_summary_path.open("w", encoding="utf-8") as raw_summary_file:
         with redirect_stdout(_Tee(sys.stdout, raw_summary_file)):
             print(f"Training smoke test on {device}.")
-            print(f"Model config: {asdict(resnet_config)}")
+            print(f"Model: {type(model).__name__}; config: {asdict(model_config)}")
             print(f"Symmetry augmentation: {symmetry_augmentation}")
             print(f"Exploration schedule: {exploration_schedule}")
             print(f"Total trainable parameters: {parameter_count:,}")
@@ -700,7 +716,7 @@ def main() -> None:
                         model,
                         optimizer,
                         ppo_config,
-                        resnet_config,
+                        model_config,
                         outer_iteration,
                         evaluation,
                     )
@@ -715,7 +731,7 @@ def main() -> None:
             model,
             optimizer,
             ppo_config,
-            resnet_config,
+            model_config,
             evaluation.iterations[-1],
             evaluation.history["mean"][-1],
             evaluation.history["median"][-1],
