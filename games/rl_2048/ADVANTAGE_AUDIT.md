@@ -11,7 +11,7 @@ training code, source checkpoint, or saved training run is modified.
 Run from the repository root, using a trusted local checkpoint:
 
 ```bash
-.venv/bin/python -m games.rl_2048.inspect_advantages select \
+.venv/bin/python -m games.rl_2048.scripts.inspect_advantages select \
   artifacts/ppo_2048/run_20260921_003303_661733_separate_trunks_c32_b4_bigger_model_lr_3e-4_minibatch_4096_parallel_32_adaptive_no_shared_trunk/final.pt \
   --output artifacts/ppo_2048/advantage_audit_final
 ```
@@ -38,7 +38,7 @@ The output directory must not already exist, protecting previous investigations.
 ## 2. Measure all first actions
 
 ```bash
-.venv/bin/python -m games.rl_2048.inspect_advantages evaluate \
+.venv/bin/python -m games.rl_2048.scripts.inspect_advantages evaluate \
   artifacts/ppo_2048/advantage_audit_final --trials 64
 ```
 
@@ -86,7 +86,7 @@ noisy trajectory or a point-estimate ranking reversal is not enough.
 ## 3. Independently confirm discrepancies
 
 ```bash
-.venv/bin/python -m games.rl_2048.inspect_advantages confirm \
+.venv/bin/python -m games.rl_2048.scripts.inspect_advantages confirm \
   artifacts/ppo_2048/advantage_audit_final --top 3 --trials 256
 ```
 
@@ -127,7 +127,7 @@ the safety cap fails rather than reporting a truncated return as a complete game
 older shared-trunk checkpoint configurations are supported.
 
 ```bash
-.venv/bin/python -m unittest games.rl_2048.test_inspect_advantages -v
+.venv/bin/python -m unittest games.rl_2048.tests.test_inspect_advantages -v
 ```
 
 This is the **learning-signal audit only**. It does not perform a PPO update,

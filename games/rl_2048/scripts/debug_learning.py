@@ -1,6 +1,6 @@
 """Capture and dissect one PPO update without changing a training run.
 
-Example: python -m games.rl_2048.debug_learning RUN/best.pt --output OUTPUT
+Example: python -m games.rl_2048.scripts.debug_learning RUN/best.pt --output OUTPUT
 Continuation returns are undiscounted remaining game scores, not final scores.
 Every continuation runs to termination; hitting the safety cap is an error.
 """

@@ -14,11 +14,11 @@ import re
 import numpy as np
 import torch
 
-from games.rl_2048.debug_learning import (
+from games.rl_2048.scripts.debug_learning import (
     make_ppo, predictions, metrics, estimate, continuations, one_step_branches,
 )
 from games.rl_2048.environment.game_2048 import Game2048, State2048
-from games.rl_2048.plot_training_diagnostics import _parse_raw_summary
+from games.rl_2048.utils.plot_training_diagnostics import _parse_raw_summary
 
 
 RUNS = {
@@ -192,7 +192,7 @@ def actor_epoch(ppo, rollout, mean, std):
 
 
 def updates(folder):
-    from games.rl_2048.debug_learning import update_epoch
+    from games.rl_2048.scripts.debug_learning import update_epoch
     for label in RUNS:
         output = folder / f'{label}_updates.json'
         if output.exists():

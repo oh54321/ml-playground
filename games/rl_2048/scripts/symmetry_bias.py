@@ -6,7 +6,7 @@ original policy after applying the corresponding action permutation.
 
 Run from the repository root:
 
-    .venv/bin/python -m games.rl_2048.test_symmetry_bias
+    .venv/bin/python -m games.rl_2048.scripts.symmetry_bias
 
 An explicit checkpoint can be supplied with ``--checkpoint``.  By default the
 latest ``artifacts/ppo_2048/run_*`` directory is used, preferring ``final.pt``
@@ -25,13 +25,14 @@ import numpy as np
 import torch
 
 # Make direct execution work as well as ``python -m ...``.
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from games.rl_2048.agent import ResNet, ResNetConfig  # noqa: E402
-from games.rl_2048.environment.game_2048 import Game2048, State2048  # noqa: E402
+from core.models.actor_critic import ActorCriticModel  # noqa: E402
 from core.symmetries.d4_transforms import transform_array  # noqa: E402
+from games.rl_2048.legacy_agent import model_from_legacy_config  # noqa: E402
+from games.rl_2048.environment.game_2048 import Game2048, State2048  # noqa: E402
 from games.rl_2048.environment.symmetry_2048 import SQUARE_SYMMETRY_SPECS  # noqa: E402
 
 
@@ -106,10 +107,10 @@ def find_latest_checkpoint() -> Path:
     raise FileNotFoundError(f"No final.pt or best.pt found under {run_root}")
 
 
-def load_model(checkpoint_path: Path) -> tuple[ResNet, dict, torch.device]:
+def load_model(checkpoint_path: Path) -> tuple[ActorCriticModel, dict, torch.device]:
     device = torch.device("cpu")
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    model = ResNet(ResNetConfig(**checkpoint["resnet_config"]))
+    model = model_from_legacy_config(checkpoint["resnet_config"])
     model.load_state_dict(checkpoint["model_state_dict"])
     model.to(device)
     model.eval()
@@ -125,7 +126,7 @@ def legal_actions(board: np.ndarray) -> list[int]:
 
 
 def policy_batch(
-    model: ResNet,
+    model: ActorCriticModel,
     boards: list[np.ndarray],
     device: torch.device,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -145,7 +146,7 @@ def policy_batch(
 
 
 def collect_states(
-    model: ResNet,
+    model: ActorCriticModel,
     device: torch.device,
     games: int,
     states_per_game: int,
@@ -194,7 +195,7 @@ def inverse_action_map(action_map: ActionMap) -> ActionMap:
 
 
 def evaluate_symmetries(
-    model: ResNet,
+    model: ActorCriticModel,
     device: torch.device,
     states: list[dict],
     batch_size: int,

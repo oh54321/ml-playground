@@ -1,4 +1,4 @@
-"""CPU regression tests: python -m unittest games.rl_2048.test_agent."""
+"""CPU regression tests: python -m unittest games.rl_2048.tests.test_agent."""
 
 import contextlib
 from dataclasses import asdict, replace
@@ -24,8 +24,8 @@ from core.symmetries.d4_transforms import (
     transform_tensor,
 )
 from games.rl_2048.environment.game_2048 import Game2048
-from games.rl_2048.inspect_game import ActivationRecorder
-from games.rl_2048.plot_training_diagnostics import _parse_raw_summary
+from games.rl_2048.scripts.inspect_game import ActivationRecorder
+from games.rl_2048.utils.plot_training_diagnostics import _parse_raw_summary
 from games.rl_2048.train_2048 import print_gradient_diagnostics
 
 

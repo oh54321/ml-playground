@@ -79,7 +79,7 @@ def prepare(folder):
 
 
 def render(folder):
-    from games.rl_2048.plot_training_diagnostics import save_line_plot
+    from games.rl_2048.utils.plot_training_diagnostics import save_line_plot
     meta=read(folder,'metadata.json')
     # All runs evaluated every ten iterations; truncated series stop at their
     # last observation instead of inventing values beyond the captured history.
@@ -153,7 +153,7 @@ def render(folder):
                 x_label='Completed PPO update epochs',y_label=ylabel,y_min=0)
     if (folder/'cases.json').exists():
         from PIL import Image, ImageDraw
-        from games.rl_2048.plot_training_diagnostics import _font
+        from games.rl_2048.utils.plot_training_diagnostics import _font
         cases=read(folder,'cases.json')
         for i,c in enumerate(cases['cases']):
             image=Image.new('RGB',(640,680),'#faf8ef'); draw=ImageDraw.Draw(image)

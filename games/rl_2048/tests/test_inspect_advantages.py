@@ -11,7 +11,7 @@ import numpy as np
 import torch
 
 from core.models.conv_actor_critic import ConvActorCriticModel, ConvActorCriticConfig
-from games.rl_2048.inspect_advantages import (
+from games.rl_2048.scripts.inspect_advantages import (
     FrozenAgent, branch_trials, choose_boards, compare_pair, confirmation_plan,
     evaluate, game_from_board, read_json, select, sha256, stream_seed,
     summarize_trials, trajectory_signals, validate_manifest,

@@ -7,7 +7,7 @@ from core.models.actor_critic import ActorCriticModel
 from core.models.conv_actor_critic import ConvActorCriticConfig
 from core.models.d4_conv_actor_critic import D4ConvActorCriticModel
 from core.models.legacy.d4_residual_adapter import D4ResidualAdapterActorCriticModel
-from games.rl_2048.plot_training_diagnostics import (
+from games.rl_2048.utils.plot_training_diagnostics import (
     save_evaluation_plots,
     save_training_diagnostic_plots,
 )

@@ -4,7 +4,7 @@ import json
 import math
 from pathlib import Path
 
-from games.rl_2048.plot_training_diagnostics import _font, save_line_plot
+from games.rl_2048.utils.plot_training_diagnostics import _font, save_line_plot
 
 
 NAMES = ['left', 'up', 'right', 'down']
@@ -26,7 +26,7 @@ def aggregate_delta(row, mode):
 def prepare(folder, comparison_checkpoint=None, gradient_case=None):
     """Run in the training environment; rendering only needs Pillow."""
     import torch
-    from games.rl_2048.debug_learning import make_ppo, one_step_branches, predictions, gradient_conflict
+    from games.rl_2048.scripts.debug_learning import make_ppo, one_step_branches, predictions, gradient_conflict
     report = json.loads((folder / 'results.json').read_text())
     torch.set_num_threads(1)
     ppo = make_ppo(torch.load(folder / 'checkpoint_snapshot.pt', map_location='cpu', weights_only=False), report['seed'])
