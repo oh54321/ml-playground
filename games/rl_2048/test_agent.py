@@ -11,7 +11,14 @@ from unittest.mock import patch
 import torch
 
 from algorithms.ppo import PPO, PPOConfig
-from games.rl_2048.agent import ActorCriticOutput, ResNet, ResNetConfig
+from games.rl_2048.agent import (
+    ActorCriticOutput,
+    D4ResidualStem,
+    ResNet,
+    ResNetConfig,
+    _d4_inverse_transform,
+    _d4_transform,
+)
 from games.rl_2048.game import Game2048
 from games.rl_2048.inspect_game import ActivationRecorder
 from games.rl_2048.plot_training_diagnostics import _parse_raw_summary
@@ -109,6 +116,34 @@ class ActorCriticTests(unittest.TestCase):
         count = lambda config: sum(p.numel() for p in ResNet(config).parameters())
         self.assertEqual(count(baseline), 153573)
         self.assertEqual(count(near), 153925)
+        budgeted_adapter = replace(
+            near,
+            head_channels=16,
+            symmetry_adapter=True,
+        )
+        self.assertEqual(count(budgeted_adapter), 153669)
+
+    def test_d4_residual_stem_is_batched_and_starts_as_identity_stem(self):
+        config = replace(BASE_CONFIG, symmetry_adapter=True)
+        model = ResNet(config)
+        stem = model.trunk._modules["stem"]
+        self.assertIsInstance(stem, D4ResidualStem)
+
+        inputs = torch.randn(3, 1, 4, 4)
+        for symmetry_index in range(stem.NUM_SYMMETRIES):
+            transformed = _d4_transform(inputs, symmetry_index)
+            recovered = _d4_inverse_transform(transformed, symmetry_index)
+            self.assertTrue(torch.equal(recovered, inputs))
+
+        with torch.no_grad():
+            expected = stem.shared_stem(inputs)
+            actual = stem(inputs)
+        self.assertTrue(torch.equal(actual, expected))
+
+        output = model(inputs)
+        (output.action_logits.square().mean() + output.value.square().mean()).backward()
+        self.assertIsNotNone(stem.residual_projection.weight.grad)
+        self.assertGreater(stem.residual_projection.weight.grad.abs().sum().item(), 0)
 
     def test_activation_recorder_uses_actor_features(self):
         for shared in (True, False):

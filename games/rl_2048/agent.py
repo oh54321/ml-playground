@@ -6,6 +6,16 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from games.rl_2048.d4 import (
+    D4ActionHead,
+    D4GroupNorm,
+    D4LiftConv,
+    D4ResBlock,
+    D4ValueHead,
+    inverse_transform as _d4_inverse_transform,
+    transform as _d4_transform,
+)
+
 
 class NetworkAccessorMixin:
     network: nn.Sequential
@@ -101,6 +111,51 @@ class FlattenHead(NetworkAccessorMixin, nn.Module):
         return self.network(x)
 
 
+class D4ResidualStem(nn.Module):
+    """A batched, residual feature mixer over 2048's eight board symmetries.
+
+    The shared stem is applied to every transformed view.  Each result is
+    aligned back to the input frame before the views are averaged, so the
+    mixed feature map remains spatially equivariant.  The zero-initialized
+    projection makes this module start exactly as the identity-view stem and
+    learn to use the symmetry path during training.
+    """
+
+    NUM_SYMMETRIES = 8
+
+    def __init__(self, shared_stem: nn.Module, n_channels: int) -> None:
+        super().__init__()
+        self.shared_stem = shared_stem
+        self.residual_projection = nn.Conv2d(n_channels, n_channels, kernel_size=1)
+        nn.init.zeros_(self.residual_projection.weight)
+        nn.init.zeros_(self.residual_projection.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        batch_size = x.shape[0]
+        views = torch.stack(
+            [_d4_transform(x, index) for index in range(self.NUM_SYMMETRIES)],
+            dim=1,
+        )
+        view_features = self.shared_stem(views.flatten(0, 1))
+        view_features = view_features.reshape(
+            batch_size,
+            self.NUM_SYMMETRIES,
+            view_features.shape[1],
+            view_features.shape[2],
+            view_features.shape[3],
+        )
+        aligned_features = torch.stack(
+            [
+                _d4_inverse_transform(view_features[:, index], index)
+                for index in range(self.NUM_SYMMETRIES)
+            ],
+            dim=1,
+        )
+        mixed_features = aligned_features.mean(dim=1)
+        identity_features = aligned_features[:, 0]
+        return identity_features + self.residual_projection(mixed_features)
+
+
 @dataclass(frozen=True)
 class ResNetConfig:
     in_channels: int
@@ -116,6 +171,8 @@ class ResNetConfig:
     # With separate trunks, n_channels and blocks apply to EACH network.
     # True preserves the architecture and state-dict keys of old checkpoints.
     shared_trunk: bool = True
+    symmetry_adapter: bool = False
+    group_equivariant: bool = False
 
 @dataclass(frozen=True)
 class ActorCriticOutput:
@@ -126,6 +183,13 @@ class ActorCriticOutput:
 class ResNet(nn.Module):
     def __init__(self, config: ResNetConfig) -> None:
         super().__init__()
+        if config.group_equivariant:
+            if config.symmetry_adapter:
+                raise ValueError("The group-equivariant model replaces the symmetry adapter")
+            if config.height != config.width or config.n_channels % 8:
+                raise ValueError("D4 layers require a square board and channels divisible by 8")
+            if config.output_dim != 4:
+                raise ValueError("The D4 action head requires four 2048 directions")
         self.config = config
         if config.shared_trunk:
             self.trunk = self.create_trunk()
@@ -153,6 +217,20 @@ class ResNet(nn.Module):
             yield from self.critic_trunk.parameters()
 
     def create_stem(self) -> nn.Module:
+        if self.config.group_equivariant:
+            families = self.config.n_channels // 8
+            modules = OrderedDict([
+                ("conv", D4LiftConv(
+                    self.config.in_channels,
+                    families,
+                    self.config.kernel_size,
+                    bias=not self.config.include_groupnorm,
+                )),
+            ])
+            if self.config.include_groupnorm:
+                modules["groupnorm"] = D4GroupNorm(families)
+            modules["relu"] = nn.ReLU()
+            return nn.Sequential(modules)
         module_dict = OrderedDict()
         module_dict["conv"] = nn.Conv2d(
             self.config.in_channels,
@@ -164,20 +242,39 @@ class ResNet(nn.Module):
         if self.config.include_groupnorm:
             module_dict["groupnorm"] = nn.GroupNorm(4, self.config.n_channels)
         module_dict["relu"] = nn.ReLU()
-        return nn.Sequential(module_dict)
+        stem = nn.Sequential(module_dict)
+        if self.config.symmetry_adapter:
+            return D4ResidualStem(stem, self.config.n_channels)
+        return stem
 
     def create_body(self) -> nn.Module:
         module_dict = OrderedDict()
         for idx in range(1, self.config.blocks + 1):
-            module_dict[f"layer{idx}"] = ResBlock(
-                self.config.n_channels,
-                kernel_size=self.config.kernel_size,
-                layers=self.config.block_layers,
-                include_groupnorm=self.config.include_groupnorm,
-            )
+            if self.config.group_equivariant:
+                module_dict[f"layer{idx}"] = D4ResBlock(
+                    self.config.n_channels // 8,
+                    kernel_size=self.config.kernel_size,
+                    layers=self.config.block_layers,
+                    include_groupnorm=self.config.include_groupnorm,
+                )
+            else:
+                module_dict[f"layer{idx}"] = ResBlock(
+                    self.config.n_channels,
+                    kernel_size=self.config.kernel_size,
+                    layers=self.config.block_layers,
+                    include_groupnorm=self.config.include_groupnorm,
+                )
         return nn.Sequential(module_dict)
 
     def create_head(self, output_dim: int) -> nn.Module:
+        if self.config.group_equivariant:
+            head = D4ActionHead if output_dim == self.config.output_dim else D4ValueHead
+            return head(
+                self.config.n_channels,
+                self.config.height,
+                self.config.width,
+                self.config.head_channels,
+            )
         return FlattenHead(
             self.config.n_channels,
             self.config.head_channels,
