@@ -8,6 +8,9 @@ import torch
 from torch import nn
 
 
+__all__ = ["ActorCriticModel", "ActorCriticOutput"]
+
+
 @dataclass(frozen=True)
 class ActorCriticOutput:
     action_logits: torch.Tensor

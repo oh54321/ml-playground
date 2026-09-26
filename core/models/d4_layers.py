@@ -21,6 +21,13 @@ from core.symmetries.d4_transforms import (
     transform_tensor,
 )
 
+__all__ = [
+    "RELATIVE_ORIENTATIONS",
+    "transform_features",
+    "D4LiftConv",
+    "D4GroupConv",
+]
+
 RELATIVE_ORIENTATIONS = torch.tensor(
     [
         [transform_index(relative_transform(reference, orientation))

@@ -16,6 +16,9 @@ from core.models.d4_layers import (
 from core.symmetries.d4_transforms import BoardTransform, D4_TRANSFORMS
 
 
+__all__ = ["D4ConvActorCriticModel"]
+
+
 class D4ConvActorCriticModel(ConvActorCriticModel):
     """A group-equivariant D4 CNN with invariant value and equivariant policy."""
 

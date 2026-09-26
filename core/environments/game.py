@@ -7,6 +7,9 @@ from core.environments.game_symmetry import GameSymmetry
 from core.environments.state import State
 
 
+__all__ = ["Game", "StepResult"]
+
+
 @dataclass(frozen=True)
 class StepResult:
     next_state: State

@@ -11,6 +11,9 @@ from torch.nn import functional as F
 from core.models.actor_critic import ActorCriticModel, ActorCriticOutput
 
 
+__all__ = ["ConvActorCriticConfig", "ConvActorCriticModel"]
+
+
 class NetworkAccessorMixin:
     network: nn.Sequential
 

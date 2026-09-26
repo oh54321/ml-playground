@@ -6,6 +6,9 @@ from typing import Sequence
 import torch
 
 
+__all__ = ["State"]
+
+
 class State(abc.ABC):
     @abc.abstractmethod
     def to_tensor(self) -> torch.Tensor:

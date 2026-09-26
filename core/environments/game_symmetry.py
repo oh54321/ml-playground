@@ -6,6 +6,9 @@ from typing import Callable
 from core.environments.state import State
 
 
+__all__ = ["GameSymmetry"]
+
+
 @dataclass(frozen=True)
 class GameSymmetry:
     """Transform a state and map actions between canonical and transformed views."""
