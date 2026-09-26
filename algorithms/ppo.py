@@ -1,4 +1,5 @@
 import dataclasses
+import math
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, List, Literal, Tuple
@@ -8,7 +9,7 @@ import torch
 import torch.nn.functional as F
 from torch.distributions import categorical
 
-from core.game import Game, State, StepResult
+from core.game import Game, State, StepResult, batch_current_states
 from games.rl_2048.agent import ActorCriticOutput, ResNet
 
 
@@ -143,6 +144,33 @@ class PPO():
         ]
         self.game_steps = [0 for _ in self.games]
         self.last_outer_iteration_policy_kl: float | None = None
+        # Fixed for a whole rollout + PPO update; the trainer may anneal it
+        # between outer iterations.
+        self.exploration_probability = 0.0
+
+    def set_exploration_probability(self, probability: float) -> None:
+        if not math.isfinite(probability) or not 0.0 <= probability < 1.0:
+            raise ValueError("exploration probability must be finite and in [0, 1)")
+        self.exploration_probability = float(probability)
+
+    def _action_log_probabilities(
+        self,
+        masked_logits: torch.Tensor,
+        illegal_actions_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Log of (1-epsilon)*policy + epsilon*uniform over legal actions."""
+        policy_log_probs = F.log_softmax(masked_logits, dim=-1)
+        if self.exploration_probability == 0.0:
+            return policy_log_probs
+        legal = ~illegal_actions_mask
+        uniform = legal.to(masked_logits.dtype) / legal.sum(dim=-1, keepdim=True)
+        probabilities = (
+            (1.0 - self.exploration_probability) * policy_log_probs.exp()
+            + self.exploration_probability * uniform
+        )
+        return probabilities.clamp_min(torch.finfo(probabilities.dtype).tiny).log().masked_fill(
+            illegal_actions_mask, -torch.inf
+        )
 
     def device(self) -> torch.device:
         return next(self.model.parameters()).device
@@ -151,8 +179,10 @@ class PPO():
         return next(self.model.parameters()).dtype
 
     def _state_batch_tensor(self, states: List[State]) -> torch.Tensor:
-        """Stack CPU state samples, then transfer the completed batch once."""
-        state_batch = torch.stack([state.to_tensor() for state in states], dim=0)
+        """Encode a homogeneous CPU batch, then transfer it to the device once."""
+        if not states:
+            raise ValueError("Cannot encode an empty state batch")
+        state_batch = type(states[0]).batch_to_tensor(states)
         return state_batch.to(device=self.device(), dtype=self.dtype())
 
     def _predict_value(self, state: State) -> float:
@@ -217,9 +247,14 @@ class PPO():
         self,
         games: List[Game],
         deterministic: bool = False,
+        states: List[State] | None = None,
     ) -> List[ActionDecision]:
         if not games:
             raise ValueError("Must evaluate at least one game")
+        if states is None:
+            states = batch_current_states(games)
+        elif len(states) != len(games):
+            raise ValueError("A supplied state batch must match the game batch")
         legal_actions_by_game = [game.legal_actions() for game in games]
         legal_action_counts = torch.tensor(
             [len(legal_actions) for legal_actions in legal_actions_by_game],
@@ -230,9 +265,7 @@ class PPO():
             raise ValueError(
                 "Every game passed to generate_next_actions must have at least one legal action"
             )
-        tensor_state = self._state_batch_tensor(
-            [game.current_state() for game in games]
-        )
+        tensor_state = self._state_batch_tensor(states)
         actor_critic_output: ActorCriticOutput = self.model(tensor_state)
         action_logits = actor_critic_output.action_logits
         values = self._untransform_predicted_value(actor_critic_output.value)
@@ -252,7 +285,14 @@ class PPO():
         )
         illegal_actions_mask[game_rows, legal_action_columns] = 0
         action_logits = action_logits.masked_fill(illegal_actions_mask, -torch.inf)
-        categorical_distribution = categorical.Categorical(logits=action_logits)
+        # Deterministic evaluation uses the unmodified network policy. Training
+        # samples from the same mixture whose log probabilities PPO will update.
+        distribution_logits = (
+            action_logits
+            if deterministic
+            else self._action_log_probabilities(action_logits, illegal_actions_mask)
+        )
+        categorical_distribution = categorical.Categorical(logits=distribution_logits)
         action = (
             action_logits.argmax(dim=-1)
             if deterministic
@@ -282,8 +322,11 @@ class PPO():
             [] for _ in range(self.config.num_parallel_games)
         ]
         for _ in range(self.config.steps_per_game_per_rollout):
-            states = [game.current_state().copy() for game in self.games]
-            decisions: List[ActionDecision] = self.generate_next_actions(self.games)
+            states = [state.copy() for state in batch_current_states(self.games)]
+            decisions: List[ActionDecision] = self.generate_next_actions(
+                self.games,
+                states=states,
+            )
             if self.config.print_moves:
                 for game_index, (game, state, decision) in enumerate(
                     zip(self.games, states, decisions)
@@ -545,7 +588,7 @@ class PPO():
             dtype=torch.bool,
         )
         action_logits = action_logits.masked_fill(legal_actions_mask, -torch.inf)
-        log_probs = F.log_softmax(action_logits, dim=-1)
+        log_probs = self._action_log_probabilities(action_logits, legal_actions_mask)
         sampled_actions = self._steps_to_tensor(steps, "action", dtype=torch.long)
         current_log_prob = log_probs[torch.arange(log_probs.shape[0], device=self.device()), sampled_actions]
         clip_multiplier = torch.where(normalized_advantages > 0, 1 + self.config.clip_epsilon, 1 - self.config.clip_epsilon)
@@ -559,7 +602,7 @@ class PPO():
         transformed_value_target = self._transform_value_target(value_target)
         value_error = value_target - predicted_values
         value_objective = (transformed_value_target - transformed_predicted_values) ** 2
-        dist = categorical.Categorical(logits=action_logits)
+        dist = categorical.Categorical(logits=log_probs)
         entropy_objective = -dist.entropy()
         return BatchObjectives(
             policy=policy_objective,
@@ -590,7 +633,7 @@ class PPO():
             illegal_actions_mask,
             -torch.inf,
         )
-        return F.log_softmax(masked_logits, dim=-1)
+        return self._action_log_probabilities(masked_logits, illegal_actions_mask)
 
     @staticmethod
     def _forward_policy_kl(

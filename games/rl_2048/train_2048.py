@@ -1,7 +1,9 @@
 from torch.optim.lr_scheduler import ExponentialLR
 from algorithms.ppo import EpochStatistics, GradientStatistics, PPO, PPOConfig
 from contextlib import redirect_stdout
+from core.game import SymmetryAugmentedGame
 from dataclasses import asdict, dataclass
+import argparse
 from games.rl_2048.agent import ResNet, ResNetConfig
 from games.rl_2048.plot_training_diagnostics import (
     save_evaluation_plots,
@@ -14,6 +16,7 @@ from pathlib import Path
 from statistics import median
 import sys
 import tempfile
+import math
 
 import torch
 import torch.optim as optim
@@ -122,6 +125,20 @@ def print_outer_iteration_header(outer_iteration: int) -> None:
     print("=" * 72)
 
 
+def linear_exploration_probability(
+    iteration: int,
+    start_iteration: int,
+    end_iteration: int,
+    start_probability: float,
+    end_probability: float,
+) -> float:
+    """Anneal one fixed policy-mixture probability per outer iteration."""
+    if end_iteration <= start_iteration:
+        return start_probability
+    progress = min(1.0, max(0.0, (iteration - start_iteration) / (end_iteration - start_iteration)))
+    return start_probability + progress * (end_probability - start_probability)
+
+
 def select_device() -> torch.device:
     if torch.cuda.is_available():
         return torch.device("cuda")
@@ -146,6 +163,8 @@ def save_checkpoint(
     mean_score: float,
     median_score: float,
     mean_moves: float,
+    symmetry_augmentation: str | None = None,
+    exploration_schedule: dict | None = None,
 ) -> None:
     """Save everything needed to inspect or resume the best evaluated policy."""
     checkpoint = {
@@ -159,6 +178,8 @@ def save_checkpoint(
             "median_score": median_score,
             "mean_moves": mean_moves,
         },
+        "symmetry_augmentation": symmetry_augmentation,
+        "exploration_schedule": exploration_schedule,
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path: Path | None = None
@@ -177,6 +198,35 @@ def save_checkpoint(
     finally:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
+
+
+def warm_start_from_checkpoint(
+    checkpoint_path: Path,
+    model: ResNet,
+    optimizer: optim.Optimizer,
+    scheduler: ExponentialLR,
+    ppo_config: PPOConfig,
+    resnet_config: ResNetConfig,
+    symmetry_augmentation: str,
+) -> tuple[int, dict | None]:
+    """Restore compatible weights/optimizer and return the next iteration and schedule.
+
+    Checkpoints do not contain active games or RNG state, so this is a warm
+    start rather than an exact continuation of the previous rollout stream.
+    """
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    if checkpoint["resnet_config"] != asdict(resnet_config):
+        raise ValueError("Checkpoint model configuration does not match this run")
+    if checkpoint["ppo_config"] != asdict(ppo_config):
+        raise ValueError("Checkpoint PPO configuration does not match this run")
+    if checkpoint.get("symmetry_augmentation") != symmetry_augmentation:
+        raise ValueError("Checkpoint symmetry augmentation does not match this run")
+    model.load_state_dict(checkpoint["model_state_dict"])
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    completed_iteration = int(checkpoint["outer_iteration"])
+    scheduler.last_epoch = completed_iteration
+    scheduler._last_lr = [group["lr"] for group in optimizer.param_groups]
+    return completed_iteration + 1, checkpoint.get("exploration_schedule")
 
 
 @torch.no_grad()
@@ -313,6 +363,8 @@ class EvaluationRun:
     save_traces: bool
     history: dict[str, list[float]]
     iterations: list[int]
+    symmetry_augmentation: str | None = None
+    exploration_schedule: dict | None = None
     best_mean_score: float = float("-inf")
 
 
@@ -370,6 +422,8 @@ def evaluate_and_report(
                 mean_score,
                 median_score,
                 mean_moves,
+                evaluation.symmetry_augmentation,
+                evaluation.exploration_schedule,
             )
             print(f"  Saved new best checkpoint: {evaluation.output_dir / 'best.pt'}")
 
@@ -401,6 +455,36 @@ def evaluate_and_report(
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Train the 2048 PPO agent")
+    parser.add_argument(
+        "--warm-start-from", type=Path,
+        help="Load compatible model and optimizer state from a checkpoint",
+    )
+    parser.add_argument(
+        "--outer-iterations", type=int,
+        help="Last outer iteration to run (default: 1000 from scratch, or 200 more when warm-starting)",
+    )
+    parser.add_argument(
+        "--num-parallel-games", type=int,
+        help="Number of environments to batch together (default: 32)",
+    )
+    parser.add_argument(
+        "--steps-per-game-per-rollout", type=int,
+        help="Steps collected from each environment per PPO update (default: 1024)",
+    )
+    parser.add_argument(
+        "--exploration-start", type=float,
+        help="Initial legal-action uniform mixture (default: 0.05)",
+    )
+    parser.add_argument(
+        "--exploration-end", type=float,
+        help="Final legal-action uniform mixture (default: 0.0)",
+    )
+    parser.add_argument(
+        "--exploration-end-iteration", type=int,
+        help="Iteration where exploration reaches its final value (default: last run iteration)",
+    )
+    args = parser.parse_args()
     # Larger experiment settings to revisit after the smoke test succeeds:
     # ppo_config = PPOConfig(
     #     gamma=0.9,
@@ -429,8 +513,13 @@ def main() -> None:
         min_update_epochs=1,
         max_update_epochs=8,
         target_kl=0.02,
-        num_parallel_games=32,
-        steps_per_game_per_rollout=1024,
+        num_parallel_games=(
+            32 if args.num_parallel_games is None else args.num_parallel_games
+        ),
+        steps_per_game_per_rollout=(
+            1024 if args.steps_per_game_per_rollout is None
+            else args.steps_per_game_per_rollout
+        ),
         max_episode_steps=2**20,
         mini_batch_size=4096,
         seed=12345,
@@ -441,40 +530,96 @@ def main() -> None:
         print_moves=False,
         print_timestamps=True,
     )
-    num_outer_iterations = 1000
     evaluation_interval = 10  # Evaluate every k outer iterations; set to 5 for longer runs.
     evaluation_seed = 67890  # Independent, fixed seed stream for evaluation games.
-    run_suffix = "bigger_model_lr_3e-4_minibatch_4096_parallel_32_adaptive_no_shared_trunk"  # Optional experiment label appended after the timestamp.
+    symmetry_augmentation = "step"
+    # Optional experiment label appended after the timestamp.
+    run_suffix = "d4_group_convolutions_140k"
     if evaluation_interval < 1:
         raise ValueError("evaluation_interval must be at least 1")
     device = select_device()
     torch.manual_seed(ppo_config.seed)
-    # Shared: 153,573 parameters. Separate: 153,925 (+0.23%, extra stem).
-    # In separate mode each network gets half the residual blocks.
-    # Set True to restore the previous 32-channel, 8-block shared model.
+    # Separate actor/critic trunks, as in the two comparison runs.
     shared_trunk = False
     resnet_config = ResNetConfig(
         in_channels=1,
-        n_channels=32,
+        n_channels=64,
         blocks=8 if shared_trunk else 4,
         height=4,
         width=4,
         output_dim=4,
+        # Eight feature families x eight orientations give 64 trunk channels;
+        # narrower heads leave more capacity in the spatial feature maps.
         head_channels=32,
         kernel_size=3,
         block_layers=2,
         include_groupnorm=True,
         shared_trunk=shared_trunk,
+        symmetry_adapter=False,
+        group_equivariant=True,
     )
     model = ResNet(resnet_config).to(device)
     parameter_count = sum(parameter.numel() for parameter in model.parameters())
+    if not 135_000 <= parameter_count <= 145_000:
+        raise ValueError(f"Expected about 140k parameters, got {parameter_count:,}")
     optimizer = optim.Adam(model.parameters(), lr=3e-4)
     scheduler = ExponentialLR(optimizer, 0.999)
+    first_outer_iteration = 1
+    checkpoint_schedule = None
+    if args.warm_start_from is not None:
+        first_outer_iteration, checkpoint_schedule = warm_start_from_checkpoint(
+            args.warm_start_from, model, optimizer, scheduler,
+            ppo_config, resnet_config, symmetry_augmentation,
+        )
+    reuse_schedule = (
+        checkpoint_schedule is not None
+        and args.outer_iterations is None
+        and args.exploration_start is None
+        and args.exploration_end is None
+        and args.exploration_end_iteration is None
+    )
+    if reuse_schedule:
+        exploration_schedule = checkpoint_schedule
+        num_outer_iterations = int(exploration_schedule["end_iteration"])
+    else:
+        if args.outer_iterations is not None:
+            num_outer_iterations = args.outer_iterations
+        elif args.warm_start_from is not None:
+            num_outer_iterations = first_outer_iteration + 199
+        else:
+            num_outer_iterations = 1000
+        exploration_schedule = {
+            "kind": "linear",
+            "start_iteration": first_outer_iteration,
+            "end_iteration": (
+                num_outer_iterations
+                if args.exploration_end_iteration is None
+                else args.exploration_end_iteration
+            ),
+            "start_probability": 0.05 if args.exploration_start is None else args.exploration_start,
+            "end_probability": 0.0 if args.exploration_end is None else args.exploration_end,
+        }
+    start_probability = float(exploration_schedule["start_probability"])
+    end_probability = float(exploration_schedule["end_probability"])
+    if exploration_schedule["kind"] != "linear":
+        raise ValueError("Only linear exploration schedules are supported")
+    if num_outer_iterations < first_outer_iteration:
+        raise ValueError("Checkpoint has already completed the requested iterations")
+    if int(exploration_schedule["end_iteration"]) < int(exploration_schedule["start_iteration"]):
+        raise ValueError("Exploration schedule end iteration precedes its start")
+    if not all(math.isfinite(p) and 0.0 <= p < 1.0 for p in (start_probability, end_probability)):
+        raise ValueError("Exploration probabilities must be finite and in [0, 1)")
+    if end_probability > start_probability:
+        raise ValueError("Exploration end probability must not exceed the start probability")
     ppo = PPO(
         model,
         optimizer,
         ppo_config,
-        game_factory=lambda seed: Game2048(seed=seed),
+        game_factory=lambda seed: SymmetryAugmentedGame(
+            Game2048(seed=seed),
+            seed=seed,
+            resample=symmetry_augmentation,
+        ),
     )
     evaluation_output_root = Path("artifacts") / "ppo_2048"
     run_timestamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S_%f")
@@ -482,9 +627,13 @@ def main() -> None:
     run_name = (
         f"run_{run_timestamp}_{architecture}"
         f"_c{resnet_config.n_channels}_b{resnet_config.blocks}"
+        f"_symmetry_{symmetry_augmentation}"
     )
     if run_suffix:
         run_name += f"_{run_suffix}"
+    run_name += "_explore_linear"
+    if args.warm_start_from is not None:
+        run_name += f"_warm_start_{first_outer_iteration - 1}"
     evaluation_output_dir = evaluation_output_root / run_name
     evaluation = EvaluationRun(
         output_dir=evaluation_output_dir,
@@ -499,13 +648,18 @@ def main() -> None:
             "mean_moves": [],
         },
         iterations=[],
+        symmetry_augmentation=symmetry_augmentation,
+        exploration_schedule=exploration_schedule,
     )
     evaluation_output_dir.mkdir(parents=True, exist_ok=True)
     run_summary_path = evaluation_output_dir / "summary.txt"
     run_summary_path.write_text(
         "PPO 2048 evaluation summary\n"
         f"Training seed: {ppo_config.seed}\n"
-        f"Evaluation seed base: {evaluation_seed}\n\n",
+        f"Evaluation seed base: {evaluation_seed}\n"
+        f"Symmetry augmentation: {symmetry_augmentation}\n"
+        f"Exploration schedule: {exploration_schedule}\n"
+        f"Warm start: {args.warm_start_from or 'none'}\n\n",
         encoding="utf-8",
     )
     raw_summary_path = evaluation_output_dir / "raw_summary.txt"
@@ -513,9 +667,26 @@ def main() -> None:
         with redirect_stdout(_Tee(sys.stdout, raw_summary_file)):
             print(f"Training smoke test on {device}.")
             print(f"Model config: {asdict(resnet_config)}")
+            print(f"Symmetry augmentation: {symmetry_augmentation}")
+            print(f"Exploration schedule: {exploration_schedule}")
             print(f"Total trainable parameters: {parameter_count:,}")
-            for outer_iteration in range(1, num_outer_iterations + 1):
+            if args.warm_start_from is not None:
+                print(
+                    f"Warm-started from {args.warm_start_from} "
+                    f"at iteration {first_outer_iteration - 1}; "
+                    "game and RNG streams start fresh."
+                )
+            for outer_iteration in range(first_outer_iteration, num_outer_iterations + 1):
                 print_outer_iteration_header(outer_iteration)
+                exploration_probability = linear_exploration_probability(
+                    outer_iteration,
+                    int(exploration_schedule["start_iteration"]),
+                    int(exploration_schedule["end_iteration"]),
+                    start_probability,
+                    end_probability,
+                )
+                ppo.set_exploration_probability(exploration_probability)
+                print(f"  rollout exploration probability: {exploration_probability:.6f}")
                 epoch_stats = ppo.run_outer_iteration()
                 scheduler.step()
                 print(f"  learning rate: {optimizer.param_groups[0]['lr']:.8e}")
@@ -553,6 +724,8 @@ def main() -> None:
             evaluation.history["mean"][-1],
             evaluation.history["median"][-1],
             evaluation.history["mean_moves"][-1],
+            symmetry_augmentation,
+            exploration_schedule,
         )
     save_training_diagnostic_plots(
         raw_summary_path,
