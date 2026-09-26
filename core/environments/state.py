@@ -1,4 +1,4 @@
-"""Base class for observations returned by games."""
+"""Base class for observations returned by environments."""
 
 import abc
 from typing import Sequence

@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from typing import Callable
 
-from core.state import State
+from core.environments.state import State
 
 
 @dataclass(frozen=True)

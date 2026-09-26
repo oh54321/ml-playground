@@ -3,8 +3,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from core.game_symmetry import GameSymmetry
-from core.state import State
+from core.environments.game_symmetry import GameSymmetry
+from core.environments.state import State
 
 
 @dataclass(frozen=True)

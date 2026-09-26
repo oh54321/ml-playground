@@ -9,9 +9,9 @@ import torch
 import torch.nn.functional as F
 from torch.distributions import categorical
 
-from core.game import Game, StepResult
-from core.game_symmetry import GameSymmetry
-from core.state import State
+from core.environments.game import Game, StepResult
+from core.environments.game_symmetry import GameSymmetry
+from core.environments.state import State
 from games.rl_2048.agent import ActorCriticOutput, ResNet
 
 

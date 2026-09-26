@@ -8,8 +8,8 @@ from typing import Callable
 import numpy as np
 import torch
 
-from core.game_symmetry import GameSymmetry
-from core.state import State
+from core.environments.game_symmetry import GameSymmetry
+from core.environments.state import State
 
 
 class BoardTransform(Enum):
