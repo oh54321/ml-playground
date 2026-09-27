@@ -26,7 +26,7 @@ from core.symmetries.d4_transforms import (
 from games.rl_2048.environment.game_2048 import Game2048
 from games.rl_2048.scripts.inspect_game import ActivationRecorder
 from games.rl_2048.utils.plot_training_diagnostics import _parse_raw_summary
-from games.rl_2048.train_2048 import print_gradient_diagnostics
+from games.rl_2048.utils.reporting import print_gradient_diagnostics
 
 
 BASE_CONFIG = ConvActorCriticConfig(
