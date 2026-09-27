@@ -1,4 +1,4 @@
-"""Summarize evaluation runs and persist their reports and best checkpoints."""
+"""Summarize evaluation runs and persist their reports and checkpoints."""
 
 from statistics import median
 
@@ -83,6 +83,20 @@ def evaluate_and_report(
                 evaluation.exploration_schedule,
             )
             print(f"  Saved new best checkpoint: {evaluation.output_dir / 'best.pt'}")
+
+        save_checkpoint(
+            evaluation.output_dir / "latest.pt",
+            model,
+            optimizer,
+            ppo_config,
+            model_config,
+            outer_iteration,
+            mean_score,
+            median_score,
+            mean_moves,
+            evaluation.symmetry_augmentation,
+            evaluation.exploration_schedule,
+        )
 
         traces_location = str(evaluation_dir) if evaluation.save_traces else "disabled"
         summary = (

@@ -17,6 +17,13 @@ def read_training_options(defaults: TrainingConfig) -> TrainingConfig:
     parser.add_argument("--exploration-start", type=float)
     parser.add_argument("--exploration-end", type=float)
     parser.add_argument("--exploration-end-iteration", type=int)
+    parser.add_argument("--evaluation-interval", type=int)
+    parser.add_argument("--evaluation-games", type=int)
+    parser.add_argument(
+        "--tensorboard",
+        action="store_true",
+        help="write live scalar metrics for TensorBoard",
+    )
     args = parser.parse_args()
 
     schedule = defaults.exploration_schedule
@@ -68,5 +75,16 @@ def read_training_options(defaults: TrainingConfig) -> TrainingConfig:
             if args.steps_per_game_per_rollout is None
             else args.steps_per_game_per_rollout
         ),
+        evaluation_interval=(
+            defaults.evaluation_interval
+            if args.evaluation_interval is None
+            else args.evaluation_interval
+        ),
+        evaluation_games=(
+            defaults.evaluation_games
+            if args.evaluation_games is None
+            else args.evaluation_games
+        ),
+        tensorboard=defaults.tensorboard or args.tensorboard,
         exploration_schedule=schedule,
     )

@@ -1,6 +1,8 @@
 """Train a 2048 agent with PPO."""
 
 from dataclasses import asdict
+from statistics import fmean
+from time import perf_counter
 
 import torch
 from torch.optim import Adam
@@ -26,7 +28,8 @@ from games.rl_2048.utils.reporting import (
 
 
 # Experiment settings. Edit these defaults for a new run; command-line options
-# in training/options.py can override the run length, rollout size, and schedule.
+# in training/options.py can override run length, rollout size, evaluation,
+# and schedule settings.
 MODEL_CONFIG = ConvActorCriticConfig(
     in_channels=1,
     n_channels=64,
@@ -109,52 +112,113 @@ def main() -> None:
         scheduler,
     )
 
-    with tee_stdout(run.raw_summary_path):
-        report_run_start(
-            str(run.device),
-            type(run.model).__name__,
-            asdict(run.model_config),
-            config.symmetry_augmentation,
-            run.exploration_data,
-            run.parameter_count,
-            config.warm_start_from,
-            run.first_iteration,
-        )
+    writer = None
+    if config.tensorboard:
+        try:
+            from torch.utils.tensorboard import SummaryWriter
+        except ImportError as error:
+            raise RuntimeError(
+                "TensorBoard logging was requested but its dependency is missing. "
+                "Install it with: python -m pip install tensorboard"
+            ) from error
+        writer = SummaryWriter(log_dir=run.output_dir / "tensorboard", flush_secs=5)
 
-        # PPO outer loop: collect a rollout, optimize the policy/value model,
-        # advance the learning-rate schedule, then evaluate on schedule.
-        for iteration in range(run.first_iteration, run.last_iteration + 1):
-            probability = run.exploration.probability(
-                iteration,
-                int(run.exploration_data["start_iteration"]),
-                run.exploration.end_iteration or run.last_iteration,
-            )
-            run.ppo.set_exploration_probability(probability)
-            report_training_iteration_start(iteration, probability)
-
-            epoch_stats = run.ppo.run_outer_iteration()
-            run.scheduler.step()
-            report_training_iteration(
-                run.optimizer.param_groups[0]["lr"],
-                epoch_stats,
-                run.ppo.last_gradient_statistics,
-                run.ppo.last_outer_iteration_policy_kl,
+    interrupted = False
+    try:
+        with tee_stdout(run.raw_summary_path):
+            report_run_start(
+                str(run.device),
+                type(run.model).__name__,
+                asdict(run.model_config),
+                config.symmetry_augmentation,
+                run.exploration_data,
+                run.parameter_count,
+                config.warm_start_from,
+                run.first_iteration,
             )
 
-            if iteration % config.evaluation_interval == 0:
-                evaluate_and_report(
-                    run.ppo,
-                    run.model,
-                    run.optimizer,
-                    ppo_config,
-                    run.model_config,
+            # PPO outer loop: collect a rollout, optimize the policy/value model,
+            # advance the learning-rate schedule, then evaluate on schedule.
+            for iteration in range(run.first_iteration, run.last_iteration + 1):
+                iteration_started = perf_counter()
+                probability = run.exploration.probability(
                     iteration,
-                    run.evaluation,
+                    int(run.exploration_data["start_iteration"]),
+                    run.exploration.end_iteration or run.last_iteration,
                 )
-            else:
-                report_evaluation_skipped(iteration, config.evaluation_interval)
+                run.ppo.set_exploration_probability(probability)
+                report_training_iteration_start(iteration, probability)
 
-    if run.evaluation.iterations:
+                epoch_stats = run.ppo.run_outer_iteration()
+                run.scheduler.step()
+                report_training_iteration(
+                    run.optimizer.param_groups[0]["lr"],
+                    epoch_stats,
+                    run.ppo.last_gradient_statistics,
+                    run.ppo.last_outer_iteration_policy_kl,
+                )
+
+                if iteration % config.evaluation_interval == 0:
+                    evaluate_and_report(
+                        run.ppo,
+                        run.model,
+                        run.optimizer,
+                        ppo_config,
+                        run.model_config,
+                        iteration,
+                        run.evaluation,
+                    )
+                else:
+                    report_evaluation_skipped(iteration, config.evaluation_interval)
+
+                if writer is not None:
+                    elapsed = perf_counter() - iteration_started
+                    writer.add_scalar("training/iteration_seconds", elapsed, iteration)
+                    writer.add_scalar(
+                        "training/learning_rate",
+                        run.optimizer.param_groups[0]["lr"],
+                        iteration,
+                    )
+                    writer.add_scalar(
+                        "training/exploration_probability", probability, iteration
+                    )
+                    if epoch_stats:
+                        for field in epoch_stats[0].__dataclass_fields__:
+                            writer.add_scalar(
+                                f"ppo/{field}",
+                                fmean(getattr(stats, field) for stats in epoch_stats),
+                                iteration,
+                            )
+                    gradients = run.ppo.last_gradient_statistics
+                    if gradients is not None:
+                        for field in gradients.__dataclass_fields__:
+                            value = getattr(gradients, field)
+                            if isinstance(value, (float, int)) and not isinstance(value, bool):
+                                writer.add_scalar(
+                                    f"gradients/{field}", value, iteration
+                                )
+                    policy_kl = run.ppo.last_outer_iteration_policy_kl
+                    if policy_kl is not None:
+                        writer.add_scalar(
+                            "ppo/policy_kl_between_iterations", policy_kl, iteration
+                        )
+                    if run.evaluation.iterations and run.evaluation.iterations[-1] == iteration:
+                        for metric, values in run.evaluation.history.items():
+                            writer.add_scalar(
+                                f"evaluation/{metric}", values[-1], iteration
+                            )
+                    writer.flush()
+    except KeyboardInterrupt:
+        interrupted = True
+        print(
+            "Training interrupted. Any completed evaluations are saved in latest.pt; "
+            "iterations since that checkpoint will need to be repeated."
+        )
+    finally:
+        if writer is not None:
+            writer.close()
+
+    if run.evaluation.iterations and not interrupted:
         save_checkpoint(
             run.output_dir / "final.pt",
             run.model,

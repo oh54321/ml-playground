@@ -73,6 +73,7 @@ class TrainingConfig:
     evaluation_seed: int
     save_traces: bool
     scheduler_decay: float
+    tensorboard: bool = False
 
 
 def linear_exploration_probability(
