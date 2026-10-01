@@ -37,13 +37,18 @@ def save_checkpoint(
     ppo_config: PPOConfig,
     model_config: ConvActorCriticConfig,
     outer_iteration: int,
-    mean_score: float,
-    median_score: float,
-    mean_moves: float,
+    mean_score: float | None,
+    median_score: float | None,
+    mean_moves: float | None,
     symmetry_augmentation: str | None = None,
     exploration_schedule: dict | None = None,
 ) -> None:
     """Atomically save the state needed to inspect or warm-start a run."""
+    evaluation_values = (mean_score, median_score, mean_moves)
+    if any(value is None for value in evaluation_values) and not all(
+        value is None for value in evaluation_values
+    ):
+        raise ValueError("Evaluation metrics must be supplied together")
     checkpoint = {
         "outer_iteration": outer_iteration,
         "model_state_dict": model.state_dict(),
@@ -55,6 +60,11 @@ def save_checkpoint(
             "median_score": median_score,
             "mean_moves": mean_moves,
         },
+        "evaluation_iteration": (
+            outer_iteration
+            if mean_score is not None and median_score is not None and mean_moves is not None
+            else None
+        ),
         "symmetry_augmentation": symmetry_augmentation,
         "exploration_schedule": exploration_schedule,
     }

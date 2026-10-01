@@ -74,6 +74,9 @@ class TrainingConfig:
     save_traces: bool
     scheduler_decay: float
     tensorboard: bool = False
+    # Iterations at which to save a model/optimizer snapshot, whether or not
+    # that iteration also runs an evaluation.
+    saved_checkpoints: tuple[int, ...] | list[int] = ()
 
 
 def linear_exploration_probability(

@@ -53,6 +53,13 @@ def _validate_config(config: TrainingConfig) -> None:
         raise ValueError("learning_rate must be positive")
     if config.outer_iterations <= 0:
         raise ValueError("outer_iterations must be positive")
+    if not isinstance(config.saved_checkpoints, (tuple, list)):
+        raise ValueError("saved_checkpoints must be a list or tuple of iterations")
+    if any(
+        isinstance(iteration, bool) or not isinstance(iteration, int) or iteration <= 0
+        for iteration in config.saved_checkpoints
+    ):
+        raise ValueError("saved_checkpoints must contain positive integer iterations")
     if config.num_parallel_games <= 0:
         raise ValueError("num_parallel_games must be positive")
     if config.steps_per_game_per_rollout <= 0:

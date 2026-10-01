@@ -63,6 +63,9 @@ TRAINING_CONFIG = TrainingConfig(
     evaluation_seed=67890,
     save_traces=False,
     scheduler_decay=0.999,
+    # Keep iteration 1000 when extending the run; the current final iteration
+    # is already written as final.pt.
+    saved_checkpoints=(1000,),
 )
 
 PPO_SETTINGS = {
@@ -111,6 +114,7 @@ def main() -> None:
         optimizer,
         scheduler,
     )
+    saved_checkpoints = set(config.saved_checkpoints) - {run.last_iteration}
 
     writer = None
     if config.tensorboard:
@@ -171,6 +175,40 @@ def main() -> None:
                 else:
                     report_evaluation_skipped(iteration, config.evaluation_interval)
 
+                # Preserve selected model/optimizer states even when no
+                # evaluation is scheduled for that iteration.
+                if iteration in saved_checkpoints:
+                    evaluation_index = next(
+                        (
+                            index
+                            for index, evaluated_iteration in enumerate(
+                                run.evaluation.iterations
+                            )
+                            if evaluated_iteration == iteration
+                        ),
+                        None,
+                    )
+                    evaluation_metrics = (
+                        (
+                            run.evaluation.history["mean"][evaluation_index],
+                            run.evaluation.history["median"][evaluation_index],
+                            run.evaluation.history["mean_moves"][evaluation_index],
+                        )
+                        if evaluation_index is not None
+                        else (None, None, None)
+                    )
+                    save_checkpoint(
+                        run.output_dir / f"checkpoint_{iteration:04d}.pt",
+                        run.model,
+                        run.optimizer,
+                        ppo_config,
+                        run.model_config,
+                        iteration,
+                        *evaluation_metrics,
+                        config.symmetry_augmentation,
+                        run.exploration_data,
+                    )
+
                 if writer is not None:
                     elapsed = perf_counter() - iteration_started
                     writer.add_scalar("training/iteration_seconds", elapsed, iteration)
@@ -218,17 +256,28 @@ def main() -> None:
         if writer is not None:
             writer.close()
 
-    if run.evaluation.iterations and not interrupted:
+    if not interrupted:
+        final_iteration = run.last_iteration
+        if (
+            run.evaluation.iterations
+            and run.evaluation.iterations[-1] == final_iteration
+        ):
+            final_index = run.evaluation.iterations.index(final_iteration)
+            final_evaluation_metrics = (
+                run.evaluation.history["mean"][final_index],
+                run.evaluation.history["median"][final_index],
+                run.evaluation.history["mean_moves"][final_index],
+            )
+        else:
+            final_evaluation_metrics = (None, None, None)
         save_checkpoint(
             run.output_dir / "final.pt",
             run.model,
             run.optimizer,
             ppo_config,
             run.model_config,
-            run.evaluation.iterations[-1],
-            run.evaluation.history["mean"][-1],
-            run.evaluation.history["median"][-1],
-            run.evaluation.history["mean_moves"][-1],
+            final_iteration,
+            *final_evaluation_metrics,
             config.symmetry_augmentation,
             run.exploration_data,
         )
