@@ -1,4 +1,4 @@
-"""Frozen-policy action-ranking audit. See ADVANTAGE_AUDIT.md for usage.
+"""Frozen-policy action-ranking audit. See documents/ADVANTAGE_AUDIT.md for usage.
 
 Three explicit phases: select boards, discover discrepancies, independently
 confirm preselected action pairs. This module never creates an optimizer.
