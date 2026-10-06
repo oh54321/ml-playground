@@ -14,6 +14,26 @@ from core.models.actor_critic import ActorCriticModel, ActorCriticOutput
 __all__ = ["ConvActorCriticConfig", "ConvActorCriticModel"]
 
 
+NUMERIC_OBSERVATION = "numeric"
+NUMERIC_ONEHOT_OBSERVATION = "numeric_onehot"
+OBSERVATION_ENCODINGS = (NUMERIC_OBSERVATION, NUMERIC_ONEHOT_OBSERVATION)
+
+
+def observation_input_channels(height: int, width: int, encoding: str) -> int:
+    """Return the convolution input channels for a board encoding."""
+    if height <= 0 or width <= 0:
+        raise ValueError("Board dimensions must be positive")
+    if encoding == NUMERIC_OBSERVATION:
+        return 1
+    if encoding == NUMERIC_ONEHOT_OBSERVATION:
+        cells = height * width
+        # One numeric magnitude plane plus empty and exponents 1..cells+1.
+        return cells + 3
+    raise ValueError(
+        f"Unknown observation_encoding {encoding!r}; expected one of {OBSERVATION_ENCODINGS}"
+    )
+
+
 class NetworkAccessorMixin:
     network: nn.Sequential
 
@@ -110,7 +130,6 @@ class FlattenHead(NetworkAccessorMixin, nn.Module):
 
 @dataclass(frozen=True)
 class ConvActorCriticConfig:
-    in_channels: int
     n_channels: int
     blocks: int
     height: int
@@ -122,6 +141,16 @@ class ConvActorCriticConfig:
     include_groupnorm: bool = True
     # With separate trunks, n_channels and blocks apply to EACH network.
     shared_trunk: bool = True
+    # Input tensors stay in the original one-plane log2 form; the model expands
+    # that plane when numeric and categorical channels are enabled.
+    observation_encoding: str = NUMERIC_OBSERVATION
+
+    @property
+    def in_channels(self) -> int:
+        """Number of channels produced by the configured observation encoding."""
+        return observation_input_channels(
+            self.height, self.width, self.observation_encoding
+        )
 
 
 class ConvActorCriticModel(ActorCriticModel):
@@ -206,6 +235,7 @@ class ConvActorCriticModel(ActorCriticModel):
         )
 
     def forward(self, observations: torch.Tensor) -> ActorCriticOutput:
+        observations = self.encode_observations(observations)
         if self.config.shared_trunk:
             policy_features = value_features = self.trunk(observations)
         else:
@@ -215,3 +245,43 @@ class ConvActorCriticModel(ActorCriticModel):
             action_logits=self.action_head(policy_features),
             value=self.value_head(value_features).squeeze(dim=-1),
         )
+
+    def encode_observations(self, observations: torch.Tensor) -> torch.Tensor:
+        """Expand the stable one-plane log2 input for categorical experiments."""
+        if self.config.observation_encoding == NUMERIC_OBSERVATION:
+            return observations
+
+        expected_shape = (self.config.height, self.config.width)
+        if observations.ndim != 4 or observations.shape[1] != 1 or tuple(
+            observations.shape[-2:]
+        ) != expected_shape:
+            raise ValueError(
+                "numeric_onehot encoding expects observations shaped "
+                f"(batch, 1, {expected_shape[0]}, {expected_shape[1]}); "
+                f"got {tuple(observations.shape)}"
+            )
+        values = observations[:, 0]
+        rounded = values.round()
+        max_exponent = self.config.height * self.config.width + 1
+        invalid = (
+            (~torch.isfinite(values))
+            | (values < 0)
+            | (values != rounded)
+            | (values > max_exponent)
+        )
+        if torch.any(invalid):
+            finite_values = values[torch.isfinite(values)]
+            maximum = (
+                float(finite_values.max().item())
+                if finite_values.numel()
+                else float("nan")
+            )
+            raise ValueError(
+                "numeric_onehot encoding requires empty cells or tile exponents "
+                f"from 1 through {max_exponent}; found an invalid value "
+                f"(finite maximum {maximum})"
+            )
+        categories = max_exponent + 1  # empty=0 and exponents 1..max_exponent
+        categorical = F.one_hot(rounded.to(torch.long), num_classes=categories)
+        categorical = categorical.permute(0, 3, 1, 2).to(dtype=observations.dtype)
+        return torch.cat((observations, categorical), dim=1)

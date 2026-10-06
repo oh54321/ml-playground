@@ -30,7 +30,7 @@ from games.rl_2048.environment.symmetry_2048 import SQUARE_SYMMETRY_SPECS
 
 
 CONFIG = ConvActorCriticConfig(
-    in_channels=1, n_channels=64, blocks=4, height=4, width=4,
+    n_channels=64, blocks=4, height=4, width=4,
     output_dim=4, head_channels=32, shared_trunk=False,
 )
 ACTION_PERMUTATIONS = {

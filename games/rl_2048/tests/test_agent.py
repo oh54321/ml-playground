@@ -30,7 +30,7 @@ from games.rl_2048.utils.reporting import print_gradient_diagnostics
 
 
 BASE_CONFIG = ConvActorCriticConfig(
-    in_channels=1, n_channels=8, blocks=1, height=4, width=4,
+    n_channels=8, blocks=1, height=4, width=4,
     output_dim=4, head_channels=8,
 )
 

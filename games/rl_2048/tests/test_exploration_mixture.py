@@ -15,7 +15,7 @@ from games.rl_2048.training.config import linear_exploration_probability
 
 def small_ppo() -> PPO:
     model = ConvActorCriticModel(ConvActorCriticConfig(
-        in_channels=1, n_channels=8, blocks=1, height=4, width=4,
+        n_channels=8, blocks=1, height=4, width=4,
         output_dim=4, head_channels=8,
     ))
     optimizer = torch.optim.Adam(model.parameters(), lr=3e-4)

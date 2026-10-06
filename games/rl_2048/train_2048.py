@@ -31,7 +31,6 @@ from games.rl_2048.utils.reporting import (
 # in training/options.py can override run length, rollout size, evaluation,
 # and schedule settings.
 MODEL_CONFIG = ConvActorCriticConfig(
-    in_channels=1,
     n_channels=64,
     blocks=4,
     height=4,

@@ -109,8 +109,7 @@ class SymmetryPPOIntegrationTests(unittest.TestCase):
         torch.manual_seed(123)
         model = ConvActorCriticModel(
             ConvActorCriticConfig(
-                in_channels=1,
-                n_channels=8,
+                    n_channels=8,
                 blocks=1,
                 height=4,
                 width=4,

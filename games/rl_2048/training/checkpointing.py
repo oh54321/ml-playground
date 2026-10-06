@@ -25,6 +25,8 @@ def _legacy_model_config(
 ) -> dict:
     """Keep the checkpoint model-config shape understood by older tools."""
     config = asdict(model_config)
+    # Retain the historical checkpoint field for readers of older snapshots.
+    config["in_channels"] = model_config.in_channels
     config["symmetry_adapter"] = isinstance(model, D4ResidualAdapterActorCriticModel)
     config["group_equivariant"] = isinstance(model, D4ConvActorCriticModel)
     return config
@@ -98,7 +100,11 @@ def warm_start_from_checkpoint(
 ) -> int:
     """Restore compatible model/optimizer state and return the next iteration."""
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
-    if checkpoint["resnet_config"] != _legacy_model_config(model, model_config):
+    checkpoint_model_config = dict(checkpoint["resnet_config"])
+    # Checkpoints written before observation encodings were explicit used the
+    # numeric log2 plane, which remains the backward-compatible default.
+    checkpoint_model_config.setdefault("observation_encoding", "numeric")
+    if checkpoint_model_config != _legacy_model_config(model, model_config):
         raise ValueError("Checkpoint model configuration does not match this run")
     if checkpoint["ppo_config"] != asdict(ppo_config):
         raise ValueError("Checkpoint PPO configuration does not match this run")

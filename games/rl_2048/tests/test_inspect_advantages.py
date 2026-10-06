@@ -22,7 +22,7 @@ DANGER_BOARD = [[16,32,64,256],[8,16,32,64],[4,8,16,8],[2,2,8,2]]
 
 
 def checkpoint(path, shared=False, transform='identity', value=2.):
-    cfg = ConvActorCriticConfig(1,4,1,4,4,4,head_channels=4,shared_trunk=shared)
+    cfg = ConvActorCriticConfig(4,1,4,4,4,head_channels=4,shared_trunk=shared)
     model = ConvActorCriticModel(cfg)
     with torch.no_grad():
         for p in model.parameters():

@@ -5,16 +5,17 @@ import unittest
 from pathlib import Path
 
 import torch
+from torch.optim.lr_scheduler import ExponentialLR
 
 from algorithms.ppo import PPOConfig
 from core.models.conv_actor_critic import ConvActorCriticConfig, ConvActorCriticModel
-from games.rl_2048.training.checkpointing import save_checkpoint
+from games.rl_2048.legacy_agent import model_from_legacy_config
+from games.rl_2048.training.checkpointing import save_checkpoint, warm_start_from_checkpoint
 
 
 class CheckpointingTests(unittest.TestCase):
     def test_checkpoint_without_evaluation_keeps_iteration_and_empty_metrics(self) -> None:
         model_config = ConvActorCriticConfig(
-            in_channels=1,
             n_channels=4,
             blocks=1,
             height=4,
@@ -69,6 +70,26 @@ class CheckpointingTests(unittest.TestCase):
         )
         self.assertIsNone(checkpoint["evaluation_iteration"])
         self.assertIn("state", checkpoint["optimizer_state_dict"])
+
+        # Older checkpoints omitted observation_encoding; they must continue
+        # to mean the original numeric log2 input when warm-started.
+        checkpoint["resnet_config"].pop("observation_encoding")
+        legacy_model = model_from_legacy_config(checkpoint["resnet_config"])
+        legacy_model.load_state_dict(checkpoint["model_state_dict"], strict=True)
+        with tempfile.TemporaryDirectory() as legacy_directory:
+            legacy_path = Path(legacy_directory) / "legacy.pt"
+            torch.save(checkpoint, legacy_path)
+            scheduler = ExponentialLR(optimizer, gamma=0.99)
+            next_iteration = warm_start_from_checkpoint(
+                legacy_path,
+                model,
+                optimizer,
+                scheduler,
+                ppo_config,
+                model_config,
+                symmetry_augmentation=None,
+            )
+        self.assertEqual(next_iteration, 4)
 
 
 if __name__ == "__main__":
