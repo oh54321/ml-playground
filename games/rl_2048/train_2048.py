@@ -144,11 +144,7 @@ def main() -> None:
             # advance the learning-rate schedule, then evaluate on schedule.
             for iteration in range(run.first_iteration, run.last_iteration + 1):
                 iteration_started = perf_counter()
-                probability = run.exploration.probability(
-                    iteration,
-                    int(run.exploration_data["start_iteration"]),
-                    int(run.exploration_data["end_iteration"]),
-                )
+                probability = run.exploration.probability(iteration)
                 run.ppo.set_exploration_probability(probability)
                 report_training_iteration_start(iteration, probability)
 

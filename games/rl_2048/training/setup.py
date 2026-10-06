@@ -1,6 +1,6 @@
 """Prepare PPO state and run artifacts for the visible training loop."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 import math
 from pathlib import Path
@@ -81,13 +81,6 @@ def _resolve_training_end(
 ) -> tuple[int, ExplorationSchedule, dict[str, object]]:
     last_iteration = config.outer_iterations
     schedule = config.exploration_schedule
-    schedule_end = (
-        schedule.end_iteration
-        if isinstance(schedule, LinearExplorationSchedule)
-        else last_iteration
-    )
-    schedule_data = schedule.to_checkpoint(first_iteration, schedule_end)
-
     if last_iteration < first_iteration:
         raise ValueError("Checkpoint has already completed the requested iterations")
     if isinstance(schedule, LinearExplorationSchedule):
@@ -98,13 +91,11 @@ def _resolve_training_end(
                 raise ValueError("Exploration probabilities must be finite and in [0, 1)")
         if schedule.end_probability > schedule.start_probability:
             raise ValueError("Exploration end probability must not exceed its start probability")
-        schedule = LinearExplorationSchedule(
-            start_probability=schedule.start_probability,
-            end_probability=schedule.end_probability,
-            end_iteration=schedule_end,
-        )
+        if schedule.start_iteration != first_iteration:
+            schedule = replace(schedule, start_iteration=first_iteration)
     elif not isinstance(schedule, NoUniformExploration):
         raise TypeError("Unsupported exploration schedule")
+    schedule_data = schedule.to_checkpoint()
     return last_iteration, schedule, schedule_data
 
 

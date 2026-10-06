@@ -48,12 +48,14 @@ def read_training_options(defaults: TrainingConfig) -> TrainingConfig:
             fallback_start = schedule.start_probability
             fallback_end = schedule.end_probability
             fallback_end_iteration = schedule.end_iteration
+            start_iteration = schedule.start_iteration
         elif isinstance(schedule, NoUniformExploration):
             # Numeric overrides opt into a linear schedule, but omitted
             # probabilities retain disabled behavior.
             fallback_start = 0.0
             fallback_end = 0.0
             fallback_end_iteration = requested_last_iteration
+            start_iteration = 1
         else:
             raise TypeError("Unsupported exploration schedule")
         schedule = LinearExplorationSchedule(
@@ -72,6 +74,7 @@ def read_training_options(defaults: TrainingConfig) -> TrainingConfig:
                 if args.exploration_end_iteration is None
                 else args.exploration_end_iteration
             ),
+            start_iteration=start_iteration,
         )
 
     return replace(

@@ -23,15 +23,11 @@ SymmetryAugmentation = Literal["step", "episode"] | None
 class NoUniformExploration:
     """An explicit schedule that disables uniform legal-action exploration."""
 
-    def probability(self, iteration: int, start_iteration: int, end_iteration: int) -> float:
+    def probability(self, iteration: int) -> float:
         return 0.0
 
-    def to_checkpoint(self, start_iteration: int, end_iteration: int) -> dict[str, object]:
-        return {
-            "kind": "disabled",
-            "start_iteration": start_iteration,
-            "end_iteration": end_iteration,
-        }
+    def to_checkpoint(self) -> dict[str, object]:
+        return {"kind": "disabled"}
 
 
 NO_UNIFORM_EXPLORATION = NoUniformExploration()
@@ -44,23 +40,28 @@ class LinearExplorationSchedule:
     start_probability: float
     end_probability: float
     end_iteration: int
+    start_iteration: int = 1
 
-    def probability(self, iteration: int, start_iteration: int, end_iteration: int) -> float:
-        if end_iteration <= start_iteration:
+    def probability(self, iteration: int) -> float:
+        if self.end_iteration <= self.start_iteration:
             return self.start_probability
         progress = min(
             1.0,
-            max(0.0, (iteration - start_iteration) / (end_iteration - start_iteration)),
+            max(
+                0.0,
+                (iteration - self.start_iteration)
+                / (self.end_iteration - self.start_iteration),
+            ),
         )
         return self.start_probability + progress * (
             self.end_probability - self.start_probability
         )
 
-    def to_checkpoint(self, start_iteration: int, end_iteration: int) -> dict[str, object]:
+    def to_checkpoint(self) -> dict[str, object]:
         return {
             "kind": "linear",
-            "start_iteration": start_iteration,
-            "end_iteration": end_iteration,
+            "start_iteration": self.start_iteration,
+            "end_iteration": self.end_iteration,
             "start_probability": self.start_probability,
             "end_probability": self.end_probability,
         }
@@ -73,6 +74,7 @@ class LinearExplorationSchedule:
             start_probability=float(checkpoint["start_probability"]),
             end_probability=float(checkpoint["end_probability"]),
             end_iteration=int(checkpoint["end_iteration"]),
+            start_iteration=int(checkpoint.get("start_iteration", 1)),
         )
 
 
@@ -128,4 +130,5 @@ def linear_exploration_probability(
         start_probability=start_probability,
         end_probability=end_probability,
         end_iteration=end_iteration,
-    ).probability(iteration, start_iteration, end_iteration)
+        start_iteration=start_iteration,
+    ).probability(iteration)

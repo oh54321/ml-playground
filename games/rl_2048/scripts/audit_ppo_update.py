@@ -146,8 +146,7 @@ def load_runtime(checkpoint_path: Path, seed: int, allow_current_d4: bool):
     epsilon = 0.0
     if schedule_data:
         schedule = exploration_schedule_from_checkpoint(schedule_data)
-        epsilon = schedule.probability(int(checkpoint['outer_iteration']) + 1,
-            int(schedule_data['start_iteration']), int(schedule_data['end_iteration']))
+        epsilon = schedule.probability(int(checkpoint['outer_iteration']) + 1)
     ppo.set_exploration_probability(epsilon)
     return checkpoint, model, optimizer, ppo, epsilon
 
