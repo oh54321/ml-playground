@@ -9,11 +9,15 @@ from torch.optim import Adam
 from torch.optim.lr_scheduler import ExponentialLR
 
 from algorithms.ppo import PPOConfig
-from core.models.conv_actor_critic import ConvActorCriticConfig
+from core.models.conv_actor_critic import (
+    NUMERIC_OBSERVATION,
+    NUMERIC_ONEHOT_OBSERVATION,
+    ConvActorCriticConfig,
+)
 from core.models.d4_conv_actor_critic import D4ConvActorCriticModel
 from games.rl_2048.environment.symmetry_2048 import SQUARE_SYMMETRY_SPECS
 from games.rl_2048.training.checkpointing import save_checkpoint
-from games.rl_2048.training.config import LinearExplorationSchedule, TrainingConfig
+from games.rl_2048.training.config import NO_UNIFORM_EXPLORATION, TrainingConfig
 from games.rl_2048.training.evaluation_reporting import evaluate_and_report
 from games.rl_2048.training.options import read_training_options
 from games.rl_2048.training.setup import prepare_training_run, select_device
@@ -30,6 +34,9 @@ from games.rl_2048.utils.reporting import (
 # Experiment settings. Edit these defaults for a new run; command-line options
 # in training/options.py can override run length, rollout size, evaluation,
 # and schedule settings.
+# Set observation_encoding below to NUMERIC_OBSERVATION for the original
+# one-plane log2 input. NUMERIC_ONEHOT_OBSERVATION adds categorical planes.
+
 MODEL_CONFIG = ConvActorCriticConfig(
     n_channels=64,
     blocks=4,
@@ -41,30 +48,26 @@ MODEL_CONFIG = ConvActorCriticConfig(
     block_layers=2,
     include_groupnorm=True,
     shared_trunk=False,
+    observation_encoding=NUMERIC_ONEHOT_OBSERVATION,
 )
 
 TRAINING_CONFIG = TrainingConfig(
-    run_name="d4_group_convolutions_140k",
+    run_name="one_hot_lambda_0.95",
     learning_rate=3e-4,
     seed=12345,
-    outer_iterations=1000,  # Last outer iteration to run, inclusive.
+    outer_iterations=4000,  # Last outer iteration to run, inclusive.
     warm_start_from=None,
     num_parallel_games=32,
     steps_per_game_per_rollout=1024,
     symmetry_augmentation="step",
-    exploration_schedule=LinearExplorationSchedule(
-        start_probability=0.05,
-        end_probability=0.0,
-        end_iteration=1000,
-    ),
+    exploration_schedule=NO_UNIFORM_EXPLORATION,
     evaluation_interval=10,
     evaluation_games=100,
     evaluation_seed=67890,
     save_traces=False,
     scheduler_decay=0.999,
-    # Keep iteration 1000 when extending the run; the current final iteration
-    # is already written as final.pt.
-    saved_checkpoints=(1000,),
+    # Preserve intermediate recovery points during the 4000-iteration run.
+    saved_checkpoints=(1000, 2000, 3000),
 )
 
 PPO_SETTINGS = {
@@ -72,7 +75,7 @@ PPO_SETTINGS = {
     "gae_lambda": 0.95,
     "clip_epsilon": 0.2,
     "value_coefficient": 0.003,
-    "entropy_coefficient": 0.01,
+    "entropy_coefficient": 0.03,
     "min_update_epochs": 1,
     "max_update_epochs": 8,
     "target_kl": 0.02,
