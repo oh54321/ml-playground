@@ -148,7 +148,7 @@ def main() -> None:
                 probability = run.exploration.probability(
                     iteration,
                     int(run.exploration_data["start_iteration"]),
-                    run.exploration.end_iteration or run.last_iteration,
+                    int(run.exploration_data["end_iteration"]),
                 )
                 run.ppo.set_exploration_probability(probability)
                 report_training_iteration_start(iteration, probability)

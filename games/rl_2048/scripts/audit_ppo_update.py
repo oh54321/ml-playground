@@ -22,7 +22,7 @@ from algorithms.ppo import PPO, PPOConfig, PolicyRolloutInformation
 from core.models.conv_actor_critic import ConvActorCriticConfig
 from core.models.d4_conv_actor_critic import D4ConvActorCriticModel
 from games.rl_2048.environment.game_2048 import Game2048, State2048
-from games.rl_2048.training.config import LinearExplorationSchedule
+from games.rl_2048.training.config import exploration_schedule_from_checkpoint
 from games.rl_2048.legacy_agent import model_from_legacy_config
 from games.rl_2048.scripts.inspect_advantages import stream_seed
 
@@ -145,7 +145,7 @@ def load_runtime(checkpoint_path: Path, seed: int, allow_current_d4: bool):
     schedule_data = checkpoint.get('exploration_schedule')
     epsilon = 0.0
     if schedule_data:
-        schedule = LinearExplorationSchedule.from_checkpoint(schedule_data)
+        schedule = exploration_schedule_from_checkpoint(schedule_data)
         epsilon = schedule.probability(int(checkpoint['outer_iteration']) + 1,
             int(schedule_data['start_iteration']), int(schedule_data['end_iteration']))
     ppo.set_exploration_probability(epsilon)

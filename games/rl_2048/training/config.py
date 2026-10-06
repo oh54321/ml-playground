@@ -5,7 +5,11 @@ from pathlib import Path
 from typing import Literal
 
 __all__ = [
+    "NO_UNIFORM_EXPLORATION",
+    "NoUniformExploration",
     "LinearExplorationSchedule",
+    "ExplorationSchedule",
+    "exploration_schedule_from_checkpoint",
     "SymmetryAugmentation",
     "TrainingConfig",
     "linear_exploration_probability",
@@ -13,6 +17,24 @@ __all__ = [
 
 
 SymmetryAugmentation = Literal["step", "episode"] | None
+
+
+@dataclass(frozen=True)
+class NoUniformExploration:
+    """An explicit schedule that disables uniform legal-action exploration."""
+
+    def probability(self, iteration: int, start_iteration: int, end_iteration: int) -> float:
+        return 0.0
+
+    def to_checkpoint(self, start_iteration: int, end_iteration: int) -> dict[str, object]:
+        return {
+            "kind": "disabled",
+            "start_iteration": start_iteration,
+            "end_iteration": end_iteration,
+        }
+
+
+NO_UNIFORM_EXPLORATION = NoUniformExploration()
 
 
 @dataclass(frozen=True)
@@ -54,6 +76,21 @@ class LinearExplorationSchedule:
         )
 
 
+ExplorationSchedule = LinearExplorationSchedule | NoUniformExploration
+
+
+def exploration_schedule_from_checkpoint(
+    checkpoint: dict[str, object],
+) -> ExplorationSchedule:
+    """Load the supported schedule kinds, including historical linear records."""
+    kind = checkpoint.get("kind", "linear")
+    if kind == "disabled":
+        return NO_UNIFORM_EXPLORATION
+    if kind == "linear":
+        return LinearExplorationSchedule.from_checkpoint({**checkpoint, "kind": "linear"})
+    raise ValueError(f"Unsupported exploration schedule kind: {kind!r}")
+
+
 @dataclass(frozen=True)
 class TrainingConfig:
     """Settings that define one reproducible PPO 2048 experiment."""
@@ -67,7 +104,7 @@ class TrainingConfig:
     num_parallel_games: int
     steps_per_game_per_rollout: int
     symmetry_augmentation: SymmetryAugmentation
-    exploration_schedule: LinearExplorationSchedule
+    exploration_schedule: ExplorationSchedule
     evaluation_interval: int
     evaluation_games: int
     evaluation_seed: int

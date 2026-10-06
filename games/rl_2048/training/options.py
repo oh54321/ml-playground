@@ -4,7 +4,11 @@ import argparse
 from dataclasses import replace
 from pathlib import Path
 
-from games.rl_2048.training.config import LinearExplorationSchedule, TrainingConfig
+from games.rl_2048.training.config import (
+    LinearExplorationSchedule,
+    NoUniformExploration,
+    TrainingConfig,
+)
 
 
 def read_training_options(defaults: TrainingConfig) -> TrainingConfig:
@@ -27,6 +31,11 @@ def read_training_options(defaults: TrainingConfig) -> TrainingConfig:
     args = parser.parse_args()
 
     schedule = defaults.exploration_schedule
+    requested_last_iteration = (
+        defaults.outer_iterations
+        if args.outer_iterations is None
+        else args.outer_iterations
+    )
     if any(
         value is not None
         for value in (
@@ -35,19 +44,31 @@ def read_training_options(defaults: TrainingConfig) -> TrainingConfig:
             args.exploration_end_iteration,
         )
     ):
+        if isinstance(schedule, LinearExplorationSchedule):
+            fallback_start = schedule.start_probability
+            fallback_end = schedule.end_probability
+            fallback_end_iteration = schedule.end_iteration
+        elif isinstance(schedule, NoUniformExploration):
+            # Numeric overrides opt into a linear schedule, but omitted
+            # probabilities retain disabled behavior.
+            fallback_start = 0.0
+            fallback_end = 0.0
+            fallback_end_iteration = requested_last_iteration
+        else:
+            raise TypeError("Unsupported exploration schedule")
         schedule = LinearExplorationSchedule(
             start_probability=(
-                schedule.start_probability
+                fallback_start
                 if args.exploration_start is None
                 else args.exploration_start
             ),
             end_probability=(
-                schedule.end_probability
+                fallback_end
                 if args.exploration_end is None
                 else args.exploration_end
             ),
             end_iteration=(
-                schedule.end_iteration
+                fallback_end_iteration
                 if args.exploration_end_iteration is None
                 else args.exploration_end_iteration
             ),

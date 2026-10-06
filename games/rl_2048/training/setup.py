@@ -14,7 +14,12 @@ from core.models.actor_critic import ActorCriticModel
 from core.models.conv_actor_critic import ConvActorCriticConfig
 from games.rl_2048.environment.game_2048 import Game2048
 from games.rl_2048.training.checkpointing import warm_start_from_checkpoint
-from games.rl_2048.training.config import LinearExplorationSchedule, TrainingConfig
+from games.rl_2048.training.config import (
+    ExplorationSchedule,
+    LinearExplorationSchedule,
+    NoUniformExploration,
+    TrainingConfig,
+)
 from games.rl_2048.training.evaluation import EvaluationRun
 
 
@@ -29,7 +34,7 @@ class TrainingRun:
     model_config: ConvActorCriticConfig
     first_iteration: int
     last_iteration: int
-    exploration: LinearExplorationSchedule
+    exploration: ExplorationSchedule
     exploration_data: dict[str, object]
     output_dir: Path
     raw_summary_path: Path
@@ -73,26 +78,33 @@ def _validate_config(config: TrainingConfig) -> None:
 def _resolve_training_end(
     config: TrainingConfig,
     first_iteration: int,
-) -> tuple[int, LinearExplorationSchedule, dict[str, object]]:
+) -> tuple[int, ExplorationSchedule, dict[str, object]]:
     last_iteration = config.outer_iterations
     schedule = config.exploration_schedule
-    schedule_end = schedule.end_iteration
-    schedule_data = schedule.to_checkpoint(first_iteration, schedule_end)
-    schedule = LinearExplorationSchedule(
-        start_probability=schedule.start_probability,
-        end_probability=schedule.end_probability,
-        end_iteration=schedule_end,
+    schedule_end = (
+        schedule.end_iteration
+        if isinstance(schedule, LinearExplorationSchedule)
+        else last_iteration
     )
+    schedule_data = schedule.to_checkpoint(first_iteration, schedule_end)
 
     if last_iteration < first_iteration:
         raise ValueError("Checkpoint has already completed the requested iterations")
-    if schedule.end_iteration < first_iteration:
-        raise ValueError("Exploration schedule end iteration precedes its start")
-    for probability in (schedule.start_probability, schedule.end_probability):
-        if not math.isfinite(probability) or not 0 <= probability < 1:
-            raise ValueError("Exploration probabilities must be finite and in [0, 1)")
-    if schedule.end_probability > schedule.start_probability:
-        raise ValueError("Exploration end probability must not exceed its start probability")
+    if isinstance(schedule, LinearExplorationSchedule):
+        if schedule.end_iteration < first_iteration:
+            raise ValueError("Exploration schedule end iteration precedes its start")
+        for probability in (schedule.start_probability, schedule.end_probability):
+            if not math.isfinite(probability) or not 0 <= probability < 1:
+                raise ValueError("Exploration probabilities must be finite and in [0, 1)")
+        if schedule.end_probability > schedule.start_probability:
+            raise ValueError("Exploration end probability must not exceed its start probability")
+        schedule = LinearExplorationSchedule(
+            start_probability=schedule.start_probability,
+            end_probability=schedule.end_probability,
+            end_iteration=schedule_end,
+        )
+    elif not isinstance(schedule, NoUniformExploration):
+        raise TypeError("Unsupported exploration schedule")
     return last_iteration, schedule, schedule_data
 
 
