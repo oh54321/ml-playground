@@ -3,7 +3,11 @@
 The trainer writes TensorBoard event files into each run's
 `artifacts/ppo_2048/<run>/tensorboard` directory when launched with
 `--tensorboard`. It records training losses, PPO diagnostics, gradient metrics,
-exploration, learning rate, iteration time, and evaluation scores. PyTorch's
+exploration, learning rate, iteration time, and evaluation scores. Most PPO
+metrics are averaged across the update epochs in each outer iteration;
+`approximate_kl` and `clip_fraction` use the final update epoch's values. The
+positive `entropy` series is logged without the redundant `negative_entropy`
+series. PyTorch's
 `SummaryWriter` produces the event files TensorBoard reads; see the
 [PyTorch TensorBoard documentation](https://docs.pytorch.org/docs/2.14/tensorboard.html).
 

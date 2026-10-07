@@ -1,7 +1,6 @@
 """Train a 2048 agent with PPO."""
 
 from dataclasses import asdict
-from statistics import fmean
 from time import perf_counter
 
 import torch
@@ -219,10 +218,21 @@ def main() -> None:
                         "training/exploration_probability", probability, iteration
                     )
                     if epoch_stats:
+                        # These diagnostics describe the final PPO update epoch;
+                        # averaging them across epochs hides the stopping-point value.
+                        final_epoch = epoch_stats[-1]
                         for field in epoch_stats[0].__dataclass_fields__:
+                            if field == "negative_entropy":
+                                continue
+                            if field in {"approximate_kl", "clip_fraction"}:
+                                value = getattr(final_epoch, field)
+                            else:
+                                value = sum(
+                                    getattr(stats, field) for stats in epoch_stats
+                                ) / len(epoch_stats)
                             writer.add_scalar(
                                 f"ppo/{field}",
-                                fmean(getattr(stats, field) for stats in epoch_stats),
+                                value,
                                 iteration,
                             )
                     gradients = run.ppo.last_gradient_statistics
