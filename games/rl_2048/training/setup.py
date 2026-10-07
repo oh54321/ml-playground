@@ -6,7 +6,6 @@ import math
 from pathlib import Path
 
 import torch
-from torch.optim.lr_scheduler import ExponentialLR
 from torch.optim import Optimizer
 
 from algorithms.ppo import PPO, PPOConfig
@@ -21,6 +20,10 @@ from games.rl_2048.training.config import (
     TrainingConfig,
 )
 from games.rl_2048.training.evaluation import EvaluationRun
+from games.rl_2048.training.schedulers import (
+    FloorExponentialLR,
+    clamp_restored_learning_rate,
+)
 
 
 @dataclass
@@ -28,7 +31,7 @@ class TrainingRun:
     device: torch.device
     model: ActorCriticModel
     optimizer: Optimizer
-    scheduler: ExponentialLR
+    scheduler: FloorExponentialLR
     ppo: PPO
     ppo_config: PPOConfig
     model_config: ConvActorCriticConfig
@@ -54,8 +57,16 @@ def select_device() -> torch.device:
 def _validate_config(config: TrainingConfig) -> None:
     if not config.run_name or Path(config.run_name).name != config.run_name:
         raise ValueError("run_name must be a non-empty directory name")
-    if config.learning_rate <= 0:
-        raise ValueError("learning_rate must be positive")
+    if not math.isfinite(config.learning_rate) or config.learning_rate <= 0:
+        raise ValueError("learning_rate must be finite and positive")
+    if config.min_learning_rate is not None and (
+        not math.isfinite(config.min_learning_rate)
+        or config.min_learning_rate < 0
+        or config.min_learning_rate > config.learning_rate
+    ):
+        raise ValueError(
+            "min_learning_rate must be finite and between zero and learning_rate"
+        )
     if config.outer_iterations <= 0:
         raise ValueError("outer_iterations must be positive")
     if not isinstance(config.saved_checkpoints, (tuple, list)):
@@ -113,7 +124,7 @@ def prepare_training_run(
     model: ActorCriticModel,
     model_config: ConvActorCriticConfig,
     optimizer: Optimizer,
-    scheduler: ExponentialLR,
+    scheduler: FloorExponentialLR,
 ) -> TrainingRun:
     """Prepare warm start, PPO state, and output files around caller-built objects."""
     _validate_config(config)
@@ -129,6 +140,11 @@ def prepare_training_run(
             ppo_config,
             model_config,
             config.symmetry_augmentation,
+        )
+        clamp_restored_learning_rate(
+            optimizer,
+            scheduler,
+            config.min_learning_rate,
         )
     last_iteration, exploration, exploration_data = _resolve_training_end(
         config,

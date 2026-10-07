@@ -5,7 +5,6 @@ from time import perf_counter
 
 import torch
 from torch.optim import Adam
-from torch.optim.lr_scheduler import ExponentialLR
 
 from algorithms.ppo import PPOConfig
 from core.models.conv_actor_critic import (
@@ -20,6 +19,7 @@ from games.rl_2048.training.config import NO_UNIFORM_EXPLORATION, TrainingConfig
 from games.rl_2048.training.evaluation_reporting import evaluate_and_report
 from games.rl_2048.training.options import read_training_options
 from games.rl_2048.training.setup import prepare_training_run, select_device
+from games.rl_2048.training.schedulers import FloorExponentialLR
 from games.rl_2048.utils.plot_training_diagnostics import save_training_diagnostic_plots
 from games.rl_2048.utils.reporting import (
     report_evaluation_skipped,
@@ -51,7 +51,7 @@ MODEL_CONFIG = ConvActorCriticConfig(
 )
 
 TRAINING_CONFIG = TrainingConfig(
-    run_name="one_hot_lambda_0.95",
+    run_name="one_hot_minLR_3e-5",
     learning_rate=3e-4,
     seed=12345,
     outer_iterations=4000,  # Last outer iteration to run, inclusive.
@@ -65,8 +65,9 @@ TRAINING_CONFIG = TrainingConfig(
     evaluation_seed=67890,
     save_traces=False,
     scheduler_decay=0.999,
+    min_learning_rate=3e-5,
     # Preserve intermediate recovery points during the 4000-iteration run.
-    saved_checkpoints=(1000, 2000, 3000),
+    saved_checkpoints=(500, 1000, 1500, 2000, 2500, 3000, 3500),
 )
 
 PPO_SETTINGS = {
@@ -105,7 +106,11 @@ def main() -> None:
     }
     model = D4ConvActorCriticModel(MODEL_CONFIG, action_permutations).to(device)
     optimizer = Adam(model.parameters(), lr=config.learning_rate)
-    scheduler = ExponentialLR(optimizer, gamma=config.scheduler_decay)
+    scheduler = FloorExponentialLR(
+        optimizer,
+        gamma=config.scheduler_decay,
+        min_learning_rate=config.min_learning_rate,
+    )
     run = prepare_training_run(
         config,
         ppo_config,

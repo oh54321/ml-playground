@@ -2,6 +2,7 @@
 
 import sys
 import unittest
+from dataclasses import replace
 from unittest.mock import patch
 
 from games.rl_2048.training.config import (
@@ -11,7 +12,7 @@ from games.rl_2048.training.config import (
     exploration_schedule_from_checkpoint,
 )
 from games.rl_2048.training.options import read_training_options
-from games.rl_2048.training.setup import _resolve_training_end
+from games.rl_2048.training.setup import _resolve_training_end, _validate_config
 
 
 def _config(schedule, outer_iterations=1200):
@@ -107,6 +108,14 @@ class ExplorationScheduleTests(unittest.TestCase):
         self.assertEqual(resumed.start_iteration, 1001)
         self.assertEqual(resumed.probability(1001), 0.2)
         self.assertEqual(data["start_iteration"], 1001)
+
+    def test_minimum_learning_rate_must_be_finite_and_at_most_initial_rate(self):
+        config = _config(NO_UNIFORM_EXPLORATION)
+        _validate_config(replace(config, min_learning_rate=1e-4))
+        for invalid in (float("nan"), float("inf"), -1e-5, 2e-3):
+            with self.subTest(min_learning_rate=invalid):
+                with self.assertRaises(ValueError):
+                    _validate_config(replace(config, min_learning_rate=invalid))
 
 
 if __name__ == "__main__":

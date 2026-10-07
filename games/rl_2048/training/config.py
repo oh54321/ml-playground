@@ -116,6 +116,8 @@ class TrainingConfig:
     # Iterations at which to save a model/optimizer snapshot, whether or not
     # that iteration also runs an evaluation.
     saved_checkpoints: tuple[int, ...] | list[int] = ()
+    # None preserves the historical unbounded exponential schedule.
+    min_learning_rate: float | None = None
 
 
 def linear_exploration_probability(
