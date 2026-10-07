@@ -3,7 +3,7 @@ import unittest
 
 import numpy as np
 
-from games.rl_2048.environment.game_2048 import Game2048, State2048
+from games.rl_2048.environment.game_2048 import Game2048
 from games.rl_2048.scripts.audit_ppo_update import (
     clipped_surrogate_gradient_active,
     choose_large_delta,
@@ -73,7 +73,7 @@ class PPOUpdateAuditTests(unittest.TestCase):
 
     def test_exact_q_uses_reward_multiplier_and_exact_uniform_spawns(self):
         grid=np.array([[2,2,4,8],[16,32,64,128],[256,512,1024,2048],[4096,8192,16384,32768]])
-        game=Game2048(seed=1); game.state=State2048(grid=grid); game.done=False
+        game=Game2048(seed=1); game.replace_board(grid)
         legal=game.legal_actions()
         self.assertIn(0,legal)
         # gamma=0 isolates immediate game-point reward; the successor
@@ -85,7 +85,7 @@ class PPOUpdateAuditTests(unittest.TestCase):
 
     def test_terminal_board_has_no_eligible_actions(self):
         grid=np.array([[2,4,2,4],[4,2,4,2],[2,4,2,4],[4,2,4,2]])
-        game=Game2048(seed=1); game.state=State2048(grid=grid); game.done=False
+        game=Game2048(seed=1); game.replace_board(grid)
         self.assertEqual(game.legal_actions(),[])
 
 

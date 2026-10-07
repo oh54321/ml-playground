@@ -107,8 +107,7 @@ def exact_action_q(model, game: Game2048, legal, gamma, reward_multiplier, value
                     spawned = moved.copy()
                     spawned[row, col] = tile
                     successor = Game2048(seed=0)
-                    successor.state = State2048(grid=spawned)
-                    successor.done = not successor.legal_actions()
+                    successor.replace_board(spawned)
                     successors.append((successor.state, 0. if successor.done else None, probability/len(empty)))
             pending=[state for state,value,_ in successors if value is None]
             pending_values=iter(value_fn(pending) if pending else [])
@@ -241,7 +240,7 @@ def capture(args):
             return ppo._untransform_predicted_value(pred).cpu().tolist()
     for index in (eligible[i] for i in candidate_indices):
         step=steps[index]
-        game = Game2048(seed=0); game.state = step.state.copy(); game.done = False
+        game = Game2048(seed=0); game.replace_board(step.state)
         legal = game.legal_actions()
         if len(legal) < 2: continue
         logits = model(ppo._state_batch_tensor([step.state])).action_logits[0]
@@ -325,7 +324,7 @@ def select_large_delta(args):
     candidate_rows=[]; actor_states=[]; query_states=[]; action_rows=[]
     for sampled_pos in candidate_indices:
         index=eligible[int(sampled_pos)]; step=steps[index]
-        game=Game2048(seed=0); game.state=step.state.copy(); game.done=False
+        game=Game2048(seed=0); game.replace_board(step.state)
         legal=game.legal_actions()
         ci=len(candidate_rows); candidate_rows.append((index,step,game,legal))
         actor_states.append(step.state)
@@ -337,8 +336,7 @@ def select_large_delta(args):
                 for row,col in empty:
                     for tile,probability in ((2,.9),(4,.1)):
                         spawned=moved.copy(); spawned[row,col]=tile
-                        successor=Game2048(seed=0); successor.state=State2048(grid=spawned)
-                        successor.done=not successor.legal_actions()
+                        successor=Game2048(seed=0); successor.replace_board(spawned)
                         if successor.done: terms.append((None,probability/len(empty)))
                         else:
                             terms.append((len(query_states),probability/len(empty)))
@@ -449,7 +447,7 @@ def branch(args):
         for arm,forced in enumerate(action_ids):
             for trial in range(args.trials):
                 game=Game2048(seed=stream_seed(manifest['seed'],71,board['id'],trial,0))
-                game.state=State2048(grid=np.asarray(board['board'])); game.done=False
+                game.replace_board(np.asarray(board['board']))
                 paths.append(dict(arm=arm,trial=trial,game=game,
                     rng=np.random.default_rng(stream_seed(manifest['seed'],71,board['id'],trial,1)),
                     forced=forced,rewards=[],values=[],steps=0))

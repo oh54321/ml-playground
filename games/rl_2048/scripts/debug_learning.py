@@ -17,7 +17,7 @@ import torch
 
 from algorithms.ppo import PPO, PPOConfig
 from games.rl_2048.legacy_agent import model_from_legacy_config
-from games.rl_2048.environment.game_2048 import Game2048, State2048
+from games.rl_2048.environment.game_2048 import Game2048
 
 
 def make_ppo(checkpoint, seed):
@@ -99,8 +99,7 @@ def continuations(ppo, cases, replicas, seed, forced=False, greedy=False):
             for rep in range(replicas):
                 spawn_seed = seed + case_id * 100000 + rep
                 game = Game2048(seed=spawn_seed)
-                game.state = step.state.copy()
-                game.total_score, game.done = 0, False
+                game.replace_board(step.state)
                 game.set_seed(spawn_seed)
                 if action is not None:
                     assert game.step(action).action_applied
@@ -146,7 +145,7 @@ def one_step_branches(ppo, board):
     Lookahead includes a learned value, so is not an exact long-term return.
     """
     game = Game2048(seed=0)
-    game.state = State2048(grid=np.asarray(board))
+    game.replace_board(np.asarray(board))
     branches = {}
     for action in game.legal_actions():
         grid, reward, moved = game._simulate_move(game.state.grid, action)
@@ -158,7 +157,7 @@ def one_step_branches(ppo, board):
                 successor = grid.copy()
                 successor[y, x] = tile
                 game_after = Game2048(seed=0)
-                game_after.state = State2048(grid=successor)
+                game_after.replace_board(successor)
                 done = not game_after.legal_actions()
                 value = 0 if done else ppo._predict_value(game_after.state) / ppo.config.reward_multiplier
                 outcomes.append(dict(board=successor.tolist(), probability=probability / len(empty),

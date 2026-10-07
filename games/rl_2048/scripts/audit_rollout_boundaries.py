@@ -127,8 +127,7 @@ def capture(args) -> None:
         branches = []
         for branch_id, branch_seed in enumerate(branch_seeds[episode_id]):
             game = Game2048(seed=int(branch_seed))
-            game.state = State2048(grid=np.asarray(row["cutoff_board"], dtype=np.int64))
-            game.done = not game.legal_actions()
+            game.replace_board(np.asarray(row["cutoff_board"], dtype=np.int64))
             branch = {"seed": int(branch_seed), "transitions": [], "censored": False,
                       "bootstrap_value": 0.0}
             branches.append(branch)

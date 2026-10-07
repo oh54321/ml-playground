@@ -20,7 +20,7 @@ import torch
 
 from core.models.actor_critic import ActorCriticModel
 from games.rl_2048.legacy_agent import model_from_legacy_config
-from games.rl_2048.environment.game_2048 import Game2048, State2048
+from games.rl_2048.environment.game_2048 import Game2048
 
 
 ACTION_NAMES = ('left', 'up', 'right', 'down')
@@ -135,8 +135,7 @@ def trajectory_signals(rewards, values, gamma, gae_lambda, horizon):
 
 def game_from_board(board, seed):
     game = Game2048(seed=seed)
-    game.state = State2048(grid=np.asarray(board, dtype=np.int64))
-    game.total_score, game.done = 0, False
+    game.replace_board(np.asarray(board, dtype=np.int64))
     # Initial random tiles were overwritten. Restart the spawn RNG so action
     # branches use the same future random stream, independent of construction.
     game.set_seed(seed)

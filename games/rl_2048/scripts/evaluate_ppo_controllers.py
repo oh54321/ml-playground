@@ -176,7 +176,7 @@ def _critic_actions(ppo, games: list[Game2048], inference_batch: int):
                     board = moved.copy()
                     board[row, col] = tile
                     successor = Game2048(seed=0)
-                    successor.state = State2048(grid=board)
+                    successor.replace_board(board)
                     weight = float(tile_probability / len(empties))
                     if not successor.legal_actions():
                         continue

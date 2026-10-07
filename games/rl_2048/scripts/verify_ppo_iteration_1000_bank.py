@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from games.rl_2048.environment.game_2048 import Game2048, State2048
+from games.rl_2048.environment.game_2048 import Game2048
 from games.rl_2048.scripts.audit_ppo_update import (
     deserialize_step, exact_action_q, load_runtime, mixture_probabilities, sha256, write_json,
 )
@@ -57,8 +57,7 @@ def run(audit: Path, candidate_limit: int = 2048):
         action_meta = []
         for local, (rollout_index, step) in enumerate(chunk):
             game = Game2048(seed=0)
-            game.state = step.state.copy()
-            game.done = False
+            game.replace_board(step.state)
             legal = game.legal_actions()
             z = logits[start + local].clone()
             mask = torch.ones_like(z, dtype=torch.bool)
@@ -77,7 +76,7 @@ def run(audit: Path, candidate_limit: int = 2048):
                             spawned = moved.copy()
                             spawned[rr, cc] = tile
                             next_state = Game2048(seed=0)
-                            next_state.state = State2048(grid=spawned)
+                            next_state.replace_board(spawned)
                             if next_state.legal_actions():
                                 terms.append((len(successors), probability / len(empty)))
                                 successors.append(next_state.state)

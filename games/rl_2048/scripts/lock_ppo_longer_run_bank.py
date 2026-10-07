@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from games.rl_2048.environment.game_2048 import Game2048, State2048
+from games.rl_2048.environment.game_2048 import Game2048
 from games.rl_2048.scripts.audit_ppo_update import (
     counterfactual_gae_horizon, deserialize_step, load_runtime, mixture_probabilities,
     sha256, tensor_tree_sha256, write_json,
@@ -55,8 +55,7 @@ def lock(args):
     rows, successors, action_meta = [], [], []
     for local, (rollout_index, step) in enumerate(selected_rows):
         game = Game2048(seed=0)
-        game.state = step.state.copy()
-        game.done = False
+        game.replace_board(step.state)
         legal = game.legal_actions()
         z = logits[local].clone()
         mask = torch.ones_like(z, dtype=torch.bool)
@@ -76,7 +75,7 @@ def lock(args):
                         spawned = moved.copy()
                         spawned[rr, cc] = tile
                         nxt = Game2048(seed=0)
-                        nxt.state = State2048(grid=spawned)
+                        nxt.replace_board(spawned)
                         if nxt.legal_actions():
                             terms.append((len(successors), probability / len(empty)))
                             successors.append(nxt.state)

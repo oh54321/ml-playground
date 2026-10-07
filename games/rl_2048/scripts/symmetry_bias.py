@@ -120,8 +120,7 @@ def load_model(checkpoint_path: Path) -> tuple[ActorCriticModel, dict, torch.dev
 def legal_actions(board: np.ndarray) -> list[int]:
     """Return legal directions without adding a random tile."""
     game = Game2048(seed=0)
-    game.state = State2048(grid=np.asarray(board, dtype=np.int64).copy())
-    game.done = False
+    game.replace_board(np.asarray(board, dtype=np.int64))
     return game.legal_actions()
 
 

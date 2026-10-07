@@ -15,14 +15,34 @@ from games.rl_2048.environment.symmetry_2048 import (
 class State2048(State):
     def __init__(self, height: int = 4, width: int = 4, grid: np.ndarray = None):
         if grid is not None:
-            self.grid = self._validate(grid)
-            self.height, self.width = np.shape(grid)
+            self._grid = self._validate(grid)
         else:
-            self.grid = np.zeros((height, width), dtype=np.int64)
-            self.height, self.width = height, width
+            self._grid = np.zeros((height, width), dtype=np.int64)
+
+    @property
+    def height(self) -> int:
+        return self._grid.shape[0]
+
+    @property
+    def width(self) -> int:
+        return self._grid.shape[1]
+
+    @property
+    def grid(self) -> np.ndarray:
+        if not self._grid.flags.writeable:
+            return self._grid.view()
+        return self._grid
+
+    @grid.setter
+    def grid(self, arr: np.ndarray) -> None:
+        if not self._grid.flags.writeable:
+            raise AttributeError("game-owned State2048 grids are read-only; use replace_board()")
+        self._grid = self._validate(arr)
 
     def _validate(self, arr: np.ndarray) -> np.ndarray:
         arr = np.asarray(arr)
+        if arr.ndim != 2 or any(dimension == 0 for dimension in arr.shape):
+            raise ValueError("grid must be a nonempty 2D array")
         if not np.issubdtype(arr.dtype, np.integer):
             if not np.all(np.equal(np.mod(arr, 1), 0)):
                 raise ValueError("grid contains non-integer values")
@@ -30,6 +50,23 @@ class State2048(State):
         mask = (arr == 0) | ((arr > 0) & ((arr & (arr - 1)) == 0))
         assert np.all(mask), f"non-power-of-2 values at {np.argwhere(~mask)}"
         return arr
+
+    def __getstate__(self) -> dict:
+        # NumPy serialization does not preserve the array's write-protection flag.
+        return {
+            "_grid": self._grid,
+            "_grid_readonly": not self._grid.flags.writeable,
+        }
+
+    def __setstate__(self, state: dict) -> None:
+        """Load current states and legacy pickles with public grid/dimensions."""
+        saved = dict(state)
+        grid = saved.get("_grid", saved.get("grid"))
+        if grid is None:
+            raise ValueError("serialized State2048 is missing its grid")
+        readonly = saved.get("_grid_readonly", saved.get("_grid_frozen", False))
+        self._grid = np.array(self._validate(grid), copy=True, order="C")
+        self._grid.flags.writeable = not readonly
 
     # 0 maps to 0, nonzero tiles map to their log2
     def to_tensor(self) -> torch.Tensor:
@@ -73,28 +110,35 @@ class Game2048(Game):
         super().__init__(seed)
         self._create_empty_board(height, width)
 
+    @property
+    def state(self) -> State2048:
+        return self._state
+
     def reset(self, seed: int = None):
         if seed is not None:
             self.rng = np.random.default_rng(seed)
         self._create_empty_board(self.state.height, self.state.width)
 
     def _create_empty_board(self, height: int = 4, width: int = 4):
-        self.state = State2048(height, width)
+        self._state = State2048(height, width)
         self.total_score = 0
         self.done = False
-        self._add_random_tile()
-        self._add_random_tile()
+        grid = self._state._grid
+        self._add_random_tile(grid)
+        self._add_random_tile(grid)
+        grid.flags.writeable = False
 
     def step(self, action: int) -> StepResult:
         if self.done:
             raise RuntimeError("step() called after game over")
         assert 0 <= action <= 3
         new_grid, reward, moved = self._simulate_move(self.state.grid, action)
-        new_grid = np.ascontiguousarray(new_grid)
-        self.state = State2048(grid=new_grid)
+        new_grid = np.array(new_grid, copy=True, order="C")
+        self._state = State2048(grid=new_grid)
         self.total_score += reward
         if moved:
-            self._add_random_tile()
+            self._add_random_tile(self._state._grid)
+        self._state._grid.flags.writeable = False
         self.done = self._is_game_over()
         return StepResult(
             next_state=self.state,
@@ -106,12 +150,43 @@ class Game2048(Game):
     def current_state(self) -> State:
         return self.state
 
+    def replace_board(
+        self, board: np.ndarray | State2048, *, total_score: int = 0
+    ) -> None:
+        """Install an explicit board, reset its score, and refresh terminal state.
+
+        The input is copied so aliases cannot mutate the game-owned board. This
+        operation does not spawn tiles or consume the game's random generator.
+        """
+        grid = board.grid if isinstance(board, State2048) else board
+        replacement = State2048(grid=np.array(grid, copy=True, order="C"))
+        self._state = replacement
+        self._state._grid.flags.writeable = False
+        self.total_score = total_score
+        self.done = self._is_game_over()
+
     def legal_actions(self) -> list:
+        return self._compute_legal_actions(self.state.grid)
+
+    def _compute_legal_actions(self, grid: np.ndarray) -> list:
+        """Return legal directions using adjacent cells, without simulating moves."""
+        # A tile can slide when a zero directly precedes/follows a nonzero
+        # along the destination direction; merges use the same adjacent pairs.
+        left = grid[:, :-1]
+        right = grid[:, 1:]
+        top = grid[:-1, :]
+        bottom = grid[1:, :]
+        horizontal_merge = np.any((left != 0) & (left == right))
+        vertical_merge = np.any((top != 0) & (top == bottom))
         legal = []
-        for a in range(4):
-            _, _, moved = self._simulate_move(self.state.grid, a)
-            if moved:
-                legal.append(a)
+        if horizontal_merge or np.any((left == 0) & (right != 0)):
+            legal.append(0)
+        if vertical_merge or np.any((top == 0) & (bottom != 0)):
+            legal.append(1)
+        if horizontal_merge or np.any((left != 0) & (right == 0)):
+            legal.append(2)
+        if vertical_merge or np.any((top != 0) & (bottom == 0)):
+            legal.append(3)
         return legal
 
     def action_name(self, action: int) -> str:
@@ -157,12 +232,21 @@ class Game2048(Game):
         return padded, reward
 
     def _is_game_over(self) -> bool:
-        return len(self.legal_actions()) == 0
+        grid = self.state.grid
+        if not np.any(grid):
+            return True
+        if np.any(grid == 0):
+            return False
+        horizontal_merge = np.any(grid[:, :-1] == grid[:, 1:])
+        vertical_merge = np.any(grid[:-1, :] == grid[1:, :])
+        return not (horizontal_merge or vertical_merge)
 
-    def _add_random_tile(self) -> bool:
-        empty_cells = np.argwhere(self.state.grid == 0)
+    def _add_random_tile(self, grid: np.ndarray) -> bool:
+        if not grid.flags.writeable:
+            raise ValueError("tile spawning requires a writable working grid")
+        empty_cells = np.argwhere(grid == 0)
         if len(empty_cells) == 0:
             return False
         row, col = empty_cells[self.rng.integers(len(empty_cells))]
-        self.state.grid[row, col] = 2 if self.rng.random() < 0.9 else 4
+        grid[row, col] = 2 if self.rng.random() < 0.9 else 4
         return True

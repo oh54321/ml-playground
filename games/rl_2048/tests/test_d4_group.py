@@ -210,7 +210,7 @@ class D4GroupTests(unittest.TestCase):
             logits = model(State2048.batch_to_tensor(states)).action_logits
         probabilities = []
         for row, state in enumerate(states):
-            game.state = state
+            game.replace_board(state)
             legal = game.legal_actions()
             mask = torch.ones(4, dtype=torch.bool)
             mask[legal] = False

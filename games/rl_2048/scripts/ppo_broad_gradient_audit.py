@@ -79,7 +79,7 @@ def lock(args):
     action_meta = []
     for pos in positions:
         index = eligible[int(pos)]; step = steps[index]
-        game = Game2048(seed=0); game.state = step.state.copy(); game.done = False
+        game = Game2048(seed=0); game.replace_board(step.state)
         legal = game.legal_actions()
         ci = len(rows); rows.append((index, step, legal)); actor_states.append(step.state)
         for action in legal:
@@ -90,7 +90,7 @@ def lock(args):
                 for r, c in empty:
                     for tile, probability in ((2, .9), (4, .1)):
                         spawned = moved.copy(); spawned[r, c] = tile
-                        nxt = Game2048(seed=0); nxt.state = State2048(grid=spawned)
+                        nxt = Game2048(seed=0); nxt.replace_board(spawned)
                         if nxt.legal_actions():
                             terms.append((len(successor_states), probability / len(empty)))
                             successor_states.append(nxt.state)

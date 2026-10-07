@@ -71,9 +71,7 @@ def _branches_for_action(model, ppo, board, action: int, count: int, phase: int,
     paths = []
     for trial in range(count):
         game = Game2048(seed=stream_seed(seed, phase, board["id"], trial, 0))
-        game.state = State2048(grid=np.asarray(board["board"], dtype=np.int64))
-        game.done = False
-        game.total_score = 0
+        game.replace_board(np.asarray(board["board"], dtype=np.int64))
         paths.append({
             "game": game,
             "action_rng": np.random.default_rng(stream_seed(seed, phase, board["id"], trial, 1)),

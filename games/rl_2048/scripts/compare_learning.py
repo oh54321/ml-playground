@@ -258,7 +258,7 @@ def cases(folder):
     steps = []
     for c in selected:
         game = Game2048(seed=0)
-        game.state = State2048(grid=np.array(c['board']))
+        game.replace_board(np.array(c['board']))
         mask = torch.ones(4, dtype=torch.bool)
         mask[game.legal_actions()] = False
         steps.append(SimpleNamespace(state=game.state, legal_actions_mask=mask))
@@ -288,7 +288,7 @@ def confirm_common_actions(folder):
     for case_id, action in chosen:
         state = State2048(grid=np.array(discovery['cases'][case_id]['board']))
         game = Game2048(seed=0)
-        game.state = state
+        game.replace_board(state)
         assert action in game.legal_actions()
         mask = torch.ones(4, dtype=torch.bool)
         mask[action] = False  # Restricts only the forced FIRST move, not later moves.
