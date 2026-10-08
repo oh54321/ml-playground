@@ -51,7 +51,7 @@ MODEL_CONFIG = ConvActorCriticConfig(
 )
 
 TRAINING_CONFIG = TrainingConfig(
-    run_name="one_hot_minLR_3e-5",
+    run_name="one_hot_minLR_3e-5_maxEpoch_20",
     learning_rate=3e-4,
     seed=12345,
     outer_iterations=4000,  # Last outer iteration to run, inclusive.
@@ -77,7 +77,7 @@ PPO_SETTINGS = {
     "value_coefficient": 0.003,
     "entropy_coefficient": 0.03,
     "min_update_epochs": 1,
-    "max_update_epochs": 8,
+    "max_update_epochs": 20,
     "target_kl": 0.02,
     "max_episode_steps": 2**20,
     "mini_batch_size": 4096,
