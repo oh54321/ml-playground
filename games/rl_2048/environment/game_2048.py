@@ -21,9 +21,24 @@ from games.rl_2048.environment.symmetry_2048 import (
 class State2048(State):
     def __init__(self, height: int = 4, width: int = 4, grid: np.ndarray = None):
         if grid is not None:
-            self._grid = self._validate(grid)
+            self._grid = self._validate(np.array(grid, copy=True, order="C"))
         else:
             self._grid = np.zeros((height, width), dtype=np.int64)
+            self._require_nonempty_board(self._grid)
+        self._grid.flags.writeable = False
+
+    @classmethod
+    def _from_validated_grid(cls, grid: np.ndarray) -> "State2048":
+        """Adopt an owned, known-valid board as an immutable state."""
+        state = cls.__new__(cls)
+        state._grid = grid
+        grid.flags.writeable = False
+        return state
+
+    @staticmethod
+    def _require_nonempty_board(grid: np.ndarray) -> None:
+        if grid.ndim != 2 or any(dimension == 0 for dimension in grid.shape):
+            raise ValueError("grid must be a nonempty 2D array")
 
     @property
     def height(self) -> int:
@@ -35,20 +50,12 @@ class State2048(State):
 
     @property
     def grid(self) -> np.ndarray:
-        if not self._grid.flags.writeable:
-            return self._grid.view()
-        return self._grid
+        return self._grid.view()
 
-    @grid.setter
-    def grid(self, arr: np.ndarray) -> None:
-        if not self._grid.flags.writeable:
-            raise AttributeError("game-owned State2048 grids are read-only; use replace_board()")
-        self._grid = self._validate(arr)
-
-    def _validate(self, arr: np.ndarray) -> np.ndarray:
+    @staticmethod
+    def _validate(arr: np.ndarray) -> np.ndarray:
         arr = np.asarray(arr)
-        if arr.ndim != 2 or any(dimension == 0 for dimension in arr.shape):
-            raise ValueError("grid must be a nonempty 2D array")
+        State2048._require_nonempty_board(arr)
         if not np.issubdtype(arr.dtype, np.integer):
             if not np.all(np.equal(np.mod(arr, 1), 0)):
                 raise ValueError("grid contains non-integer values")
@@ -70,9 +77,9 @@ class State2048(State):
         grid = saved.get("_grid", saved.get("grid"))
         if grid is None:
             raise ValueError("serialized State2048 is missing its grid")
-        readonly = saved.get("_grid_readonly", saved.get("_grid_frozen", False))
-        self._grid = np.array(self._validate(grid), copy=True, order="C")
-        self._grid.flags.writeable = not readonly
+        self._grid = self._validate(np.array(grid, copy=True, order="C"))
+        # Older pickles may record a mutable state; loaded states are immutable now.
+        self._grid.flags.writeable = False
 
     # 0 maps to 0, nonzero tiles map to their log2
     def to_tensor(self) -> torch.Tensor:
@@ -95,13 +102,17 @@ class State2048(State):
         return f"State2048(\n{self.grid}\n)"
 
     def copy(self) -> "State2048":
-        return State2048(grid=self.grid.copy())
+        return State2048._from_validated_grid(self._grid.copy(order="C"))
 
 
 def _transform_state(state: State, transform: BoardTransform) -> State2048:
     if not isinstance(state, State2048):
         raise TypeError("2048 symmetries require State2048 instances")
-    return State2048(grid=transform_array(state.grid, transform))
+    return State2048._from_validated_grid(transform_array(state.grid, transform))
+
+
+_SQUARE_SYMMETRIES = game_symmetries_for(_transform_state, square_board=True)
+_RECTANGULAR_SYMMETRIES = game_symmetries_for(_transform_state, square_board=False)
 
 
 class Game2048(Game):
@@ -126,13 +137,13 @@ class Game2048(Game):
         self._create_empty_board(self.state.height, self.state.width)
 
     def _create_empty_board(self, height: int = 4, width: int = 4):
-        self._state = State2048(height, width)
+        grid = np.zeros((height, width), dtype=np.int64)
+        State2048._require_nonempty_board(grid)
+        self._add_random_tile(grid)
+        self._add_random_tile(grid)
+        self._state = State2048._from_validated_grid(grid)
         self.total_score = 0
         self.done = False
-        grid = self._state._grid
-        self._add_random_tile(grid)
-        self._add_random_tile(grid)
-        grid.flags.writeable = False
 
     def step(self, action: int) -> StepResult:
         if self.done:
@@ -143,20 +154,18 @@ class Game2048(Game):
             new_grid = np.zeros(grid.shape, dtype=np.int64)
             reward, moved, terminated = step_int64(grid, action, self.rng, new_grid)
             # The kernel validates its output; adopt the NumPy-owned board.
-            self._state = State2048.__new__(State2048)
-            self._state._grid = new_grid
-            new_grid.flags.writeable = False
+            self._state = State2048._from_validated_grid(new_grid)
             reward = np.int64(reward)
             self.total_score += reward
             self.done = bool(terminated)
         else:
             # Preserve the original dtype and overflow behavior for other boards.
             new_grid, reward, moved = self._simulate_move_numpy(grid, action)
-            self._state = State2048(grid=np.array(new_grid, copy=True, order="C"))
-            self.total_score += reward
+            working_grid = State2048._validate(np.array(new_grid, copy=True, order="C"))
             if moved:
-                self._add_random_tile(self._state._grid)
-            self._state._grid.flags.writeable = False
+                self._add_random_tile(working_grid)
+            self._state = State2048._from_validated_grid(working_grid)
+            self.total_score += reward
             self.done = self._is_game_over()
         return StepResult(
             next_state=self.state,
@@ -177,9 +186,8 @@ class Game2048(Game):
         operation does not spawn tiles or consume the game's random generator.
         """
         grid = board.grid if isinstance(board, State2048) else board
-        replacement = State2048(grid=np.array(grid, copy=True, order="C"))
+        replacement = State2048(grid=grid)
         self._state = replacement
-        self._state._grid.flags.writeable = False
         self.total_score = total_score
         self.done = self._is_game_over()
 
@@ -199,10 +207,9 @@ class Game2048(Game):
     def symmetries(self) -> tuple[GameSymmetry, ...]:
         # Quarter-turns and diagonal reflections swap dimensions, so rectangular
         # boards expose only the four transformations that preserve their shape.
-        return game_symmetries_for(
-            _transform_state,
-            square_board=self.state.height == self.state.width,
-        )
+        if self.state.height == self.state.width:
+            return _SQUARE_SYMMETRIES
+        return _RECTANGULAR_SYMMETRIES
 
     def _simulate_move(
         self, grid: np.ndarray, action: int

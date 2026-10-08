@@ -30,6 +30,13 @@ TEST_BOARD = np.array(
 
 
 class SymmetryDefinitionTests(unittest.TestCase):
+    def test_symmetry_objects_are_shared_by_board_shape(self):
+        square = Game2048(4, 4, seed=1).symmetries()
+        rectangular = Game2048(3, 4, seed=2).symmetries()
+        self.assertIs(square, Game2048(2, 2, seed=3).symmetries())
+        self.assertIs(rectangular, Game2048(5, 7, seed=4).symmetries())
+        self.assertIsNot(square, rectangular)
+
     def test_all_square_symmetries_commute_with_moves(self):
         game = Game2048(seed=0)
         state = State2048(grid=TEST_BOARD)

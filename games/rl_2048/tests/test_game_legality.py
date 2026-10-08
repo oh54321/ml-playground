@@ -164,9 +164,13 @@ class TestGameLegality(unittest.TestCase):
         self.assertEqual(game.legal_actions(), [])
         self.assertEqual(game.rng.bit_generator.state, rng_state)
         installed_state = game.state
-        for invalid in (np.empty((0, 2), dtype=np.int64), np.array([[2.5]])):
+        for invalid, error in (
+            (np.empty((0, 2), dtype=np.int64), ValueError),
+            (np.array([[2.5]]), ValueError),
+            (np.array([[3]], dtype=np.int64), AssertionError),
+        ):
             with self.subTest(invalid=invalid.tolist()):
-                with self.assertRaises(ValueError):
+                with self.assertRaises(error):
                     game.replace_board(invalid)
                 self.assertIs(game.state, installed_state)
                 self.assertEqual(game.total_score, 7)
@@ -180,51 +184,107 @@ class TestGameLegality(unittest.TestCase):
         self.assertGreater(len(game.legal_actions()), 0)
         self.assertEqual(game.total_score, 0)
 
-    def test_standalone_state_grid_remains_writable(self):
-        state = State2048(grid=np.array([[2, 0]], dtype=np.int64))
-        state.grid[0, 1] = 4
-        state.grid = np.array([[8, 16, 32]], dtype=np.int64)
-        self.assertEqual(state.grid.tolist(), [[8, 16, 32]])
+    def test_standalone_states_copy_validate_and_freeze_external_grids(self):
+        external = np.array([[2, 0]], dtype=np.int64)
+        state = State2048(grid=external)
+        self.assertFalse(state.grid.flags.writeable)
+        external[0, 0] = 3
+        self.assertEqual(state.grid.tolist(), [[2, 0]])
+        with self.assertRaises(ValueError):
+            state.grid[0, 1] = 4
+        with self.assertRaises(AttributeError):
+            state.grid = np.array([[8, 16, 32]], dtype=np.int64)
+        with self.assertRaises(ValueError):
+            state.grid.setflags(write=True)
+        with self.assertRaises(ValueError):
+            State2048(height=0, width=2)
+        with self.assertRaises(ValueError):
+            State2048(height=2, width=0)
+
+    def test_immutable_snapshots_skip_revalidation_safely(self):
+        game = Game2048(2, 3, seed=41)
+        game.replace_board(np.array([[2, 0, 0], [4, 8, 16]], dtype=np.int64))
+        original = game.state
+        original_grid = original.grid.copy()
+
+        with patch.object(
+            State2048, "_validate", side_effect=AssertionError("unexpected validation")
+        ):
+            copied = original.copy()
+            self.assertFalse(copied.grid.flags.writeable)
+            self.assertFalse(np.shares_memory(copied.grid, original.grid))
+            with self.assertRaises(ValueError):
+                copied.grid[0, 0] = 3
+            np.testing.assert_array_equal(original.grid, original_grid)
+
+            transformed = game.symmetries()[0].transform_state(original)
+            self.assertFalse(transformed.grid.flags.writeable)
+            transformed_copy = transformed.copy()
+            self.assertFalse(transformed_copy.grid.flags.writeable)
+            self.assertFalse(np.shares_memory(transformed_copy.grid, transformed.grid))
+
+            result = game.step(0)
+            self.assertIs(result.next_state, game.state)
+            next_copy = result.next_state.copy()
+            self.assertFalse(next_copy.grid.flags.writeable)
+            self.assertFalse(np.shares_memory(next_copy.grid, result.next_state.grid))
+            held_snapshot = original.grid.copy()
+            game.step(1)
+            np.testing.assert_array_equal(original.grid, held_snapshot)
+
+    def test_external_aliases_are_isolated_and_invalid_inputs_remain_rejected(self):
+        backing = np.array([[2, 4], [8, 16]], dtype=np.int64)
+        readonly_view = backing.view()
+        readonly_view.flags.writeable = False
+        state = State2048(grid=readonly_view)
+        backing[0, 0] = 3
+        np.testing.assert_array_equal(state.grid, [[2, 4], [8, 16]])
+        self.assertFalse(state.grid.flags.writeable)
+        np.testing.assert_array_equal(state.copy().grid, state.grid)
+        transformed = Game2048().symmetries()[0].transform_state(state)
+        np.testing.assert_array_equal(transformed.grid, state.grid)
+        self.assertFalse(transformed.grid.flags.writeable)
+
+        mutable_input = np.array([[2, 4]], dtype=np.int64)
+        immutable = State2048(grid=mutable_input)
+        mutable_input[0, 0] = 3
+        np.testing.assert_array_equal(immutable.grid, [[2, 4]])
+        with self.assertRaises(AssertionError):
+            State2048(grid=np.array([[3]], dtype=np.int64))
+
+        restored = State2048.__new__(State2048)
+        with self.assertRaises(AssertionError):
+            restored.__setstate__(
+                {"_grid": np.array([[3]], dtype=np.int64), "_grid_readonly": True}
+            )
 
     def test_legacy_mutable_and_frozen_state_pickle_compatibility(self):
         expected = np.array([[2, 4], [8, 16]], dtype=np.int64)
-        expected_tensor = State2048(grid=expected.copy()).to_tensor().numpy()
-        legacy = State2048.__new__(State2048)
-        legacy.__dict__.update(
-            grid=expected.copy(), height=2, width=2
-        )
-        legacy_restored = State2048.__new__(State2048)
-        legacy_restored.__setstate__(legacy.__dict__)
-        np.testing.assert_array_equal(legacy_restored.grid, expected)
-        np.testing.assert_array_equal(legacy_restored.to_tensor().numpy(), expected_tensor)
-        self.assertEqual(legacy_restored.height, 2)
-        self.assertEqual(legacy_restored.width, 2)
-        legacy_restored.grid[0, 0] = 4
+        expected_tensor = State2048(grid=expected).to_tensor().numpy()
+        for payload in (
+            {"grid": expected.copy(), "height": 2, "width": 2},
+            {"_grid": expected.copy(), "_grid_frozen": True},
+            {"_grid": expected.copy(), "_grid_readonly": False},
+        ):
+            restored = State2048.__new__(State2048)
+            restored.__setstate__(payload)
+            np.testing.assert_array_equal(restored.grid, expected)
+            source = payload.get("_grid", payload.get("grid"))
+            self.assertFalse(np.shares_memory(restored.grid, source))
+            with self.assertRaises(ValueError):
+                restored.grid[0, 0] = 4
+            with self.assertRaises(ValueError):
+                restored.grid.setflags(write=True)
 
-        interim_restored = State2048.__new__(State2048)
-        interim_restored.__setstate__(
-            {"_grid": expected.copy(), "_grid_frozen": True}
-        )
-        np.testing.assert_array_equal(interim_restored.grid, expected)
-        with self.assertRaises(ValueError):
-            interim_restored.grid[0, 0] = 4
-
-        mutable = State2048(grid=expected.copy())
-        mutable_restored = pickle.loads(pickle.dumps(mutable))
-        np.testing.assert_array_equal(mutable_restored.grid, expected)
-        np.testing.assert_array_equal(mutable_restored.to_tensor().numpy(), expected_tensor)
-        mutable_restored.grid[0, 0] = 4
-
+        standalone = State2048(grid=expected)
         game = Game2048(seed=29)
         game.replace_board(expected)
-        frozen = game.state
-        for restored in (
-            pickle.loads(pickle.dumps(frozen)),
-            copy.deepcopy(frozen),
-        ):
-            with self.subTest(restored=type(restored).__name__):
+        for original in (standalone, game.state):
+            for restored in (pickle.loads(pickle.dumps(original)), copy.deepcopy(original)):
                 np.testing.assert_array_equal(restored.grid, expected)
                 np.testing.assert_array_equal(restored.to_tensor().numpy(), expected_tensor)
+                self.assertEqual(restored.height, 2)
+                self.assertEqual(restored.width, 2)
                 with self.assertRaises(ValueError):
                     restored.grid[0, 0] = 4
                 with self.assertRaises(ValueError):
