@@ -68,6 +68,16 @@ def evaluate_games(
     if not seeds:
         raise ValueError("Must evaluate at least one game")
 
+    with ppo.model.prepared_inference():
+        return _evaluate_games(ppo, seeds, save_traces, trace_output_dir)
+
+
+def _evaluate_games(
+    ppo: PPO,
+    seeds: list[int],
+    save_traces: bool,
+    trace_output_dir: Path | None,
+) -> EvaluationResult:
     game_numbers = list(range(1, len(seeds) + 1))
     games = {
         game_number: Game2048(seed=seed)

@@ -1,6 +1,7 @@
 """Architecture-independent actor-critic model contract used by PPO."""
 
 import abc
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -24,6 +25,10 @@ class ActorCriticModel(nn.Module, abc.ABC):
     extracts features. Implementations expose representation parameters so
     PPO can report policy/value gradient diagnostics without inspecting layers.
     """
+
+    def prepared_inference(self) -> AbstractContextManager[None]:
+        """Optionally reuse fixed-weight computations during rollout collection."""
+        return nullcontext()
 
     @abc.abstractmethod
     def forward(self, observations: torch.Tensor) -> ActorCriticOutput:

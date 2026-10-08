@@ -76,6 +76,16 @@ class D4GroupNorm(nn.Module):
         return normalized.reshape(batch, self.families * NUM_SYMMETRIES, height, width)
 
 
+def _parameters_for_forward(layer) -> tuple[torch.Tensor, torch.Tensor | None]:
+    """Reuse D4 parameters only inside the model's inference scope."""
+    prepared = getattr(layer, "_prepared_parameters", None)
+    if prepared is not None:
+        if torch.is_grad_enabled():
+            raise RuntimeError("prepared D4 weights cannot be used with gradients enabled")
+        return prepared
+    return layer._expand_parameters()
+
+
 class D4LiftConv(nn.Module):
     """Lift a scalar board image to oriented feature maps with tied filters."""
 
@@ -101,11 +111,15 @@ class D4LiftConv(nn.Module):
         )
         self.register_buffer("expanded_indices", indices.flatten(), persistent=False)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def _expand_parameters(self) -> tuple[torch.Tensor, torch.Tensor | None]:
         weights = self.weight.flatten().index_select(
             0, self.expanded_indices
         ).reshape(-1, self.weight.shape[1], self.kernel_size, self.kernel_size)
         bias = self.bias.repeat_interleave(NUM_SYMMETRIES) if self.bias is not None else None
+        return weights, bias
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        weights, bias = _parameters_for_forward(self)
         return F.conv2d(x, weights, bias, padding=self.kernel_size // 2)
 
 
@@ -144,7 +158,7 @@ class D4GroupConv(nn.Module):
         )
         self.register_buffer("expanded_indices", indices.flatten(), persistent=False)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def _expand_parameters(self) -> tuple[torch.Tensor, torch.Tensor | None]:
         weights = self.weight.flatten().index_select(
             0, self.expanded_indices
         ).reshape(
@@ -154,6 +168,10 @@ class D4GroupConv(nn.Module):
             self.kernel_size,
         )
         bias = self.bias.repeat_interleave(NUM_SYMMETRIES) if self.bias is not None else None
+        return weights, bias
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        weights, bias = _parameters_for_forward(self)
         return F.conv2d(x, weights, bias, padding=self.kernel_size // 2)
 
 
@@ -197,17 +215,21 @@ class _D4ScalarProbe(nn.Module):
             nn.Linear(hidden, 1),
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        batch = x.shape[0]
+    def _expand_parameters(self) -> tuple[torch.Tensor, torch.Tensor | None]:
         first_layer = self.network[0]
-        hidden = first_layer.out_features
         # Transform the weights once for the batch instead of materializing
         # eight large, transformed copies of every input feature map.
         weights = first_layer.weight[:, self.inverse_permutations]
         weights = weights.permute(1, 0, 2).reshape(
-            NUM_SYMMETRIES * hidden, -1
+            NUM_SYMMETRIES * first_layer.out_features, -1
         )
         biases = first_layer.bias.repeat(NUM_SYMMETRIES)
+        return weights, biases
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        batch = x.shape[0]
+        hidden = self.network[0].out_features
+        weights, biases = _parameters_for_forward(self)
         activations = F.linear(x.flatten(1), weights, biases)
         activations = self.network[1](activations).reshape(
             batch * NUM_SYMMETRIES, hidden

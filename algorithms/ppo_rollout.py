@@ -358,6 +358,12 @@ class RolloutCollector:
     def collect_batched_information(
         self,
     ) -> Tuple[List[PolicyRolloutInformation], float, float]:
+        with self.model.prepared_inference():
+            return self._collect_batched_information()
+
+    def _collect_batched_information(
+        self,
+    ) -> Tuple[List[PolicyRolloutInformation], float, float]:
         rollouts_by_game: list[list[PolicyRolloutInformation]] = [
             [] for _ in self.games
         ]

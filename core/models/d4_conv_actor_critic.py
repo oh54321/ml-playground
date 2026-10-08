@@ -1,17 +1,22 @@
 """D4-aware convolutional actor-critic models for square-grid observations."""
 
 from collections import OrderedDict
-from typing import Mapping
+from contextlib import contextmanager
+from typing import Iterator, Mapping
+
+import torch
 from torch import nn
 
 from core.models.conv_actor_critic import ConvActorCriticModel, ConvActorCriticConfig
 from core.models.d4_layers import (
     D4ActionHead,
+    D4GroupConv,
     D4GroupNorm,
     D4LiftConv,
     D4ResBlock,
     D4ValueHead,
     NUM_SYMMETRIES,
+    _D4ScalarProbe,
 )
 from core.symmetries.d4_transforms import BoardTransform, D4_TRANSFORMS
 
@@ -37,6 +42,25 @@ class D4ConvActorCriticModel(ConvActorCriticModel):
             raise ValueError("D4 action mappings must match the configured output size")
         self.__dict__["action_permutations"] = action_permutations
         super().__init__(config)
+
+    @contextmanager
+    def prepared_inference(self) -> Iterator[None]:
+        """Prepare D4 parameters for one rollout; clear before updates.
+
+        Model weights and device must remain fixed inside this scope.
+        """
+        layers = [layer for layer in self.modules()
+                  if isinstance(layer, (D4LiftConv, D4GroupConv, _D4ScalarProbe))]
+        if any(getattr(layer, "_prepared_parameters", None) is not None for layer in layers):
+            raise RuntimeError("D4 inference preparation scopes cannot be nested")
+        try:
+            with torch.no_grad():
+                for layer in layers:
+                    layer._prepared_parameters = layer._expand_parameters()
+            yield
+        finally:
+            for layer in layers:
+                layer._prepared_parameters = None
 
     def create_stem(self) -> nn.Module:
         families = self.config.n_channels // NUM_SYMMETRIES
