@@ -7,6 +7,12 @@ from core.environments.game import Game, StepResult
 from core.environments.game_symmetry import GameSymmetry
 from core.environments.state import State
 from core.symmetries.d4_transforms import BoardTransform, transform_array
+from games.rl_2048.environment._game_2048_kernels import (
+    legal_neighbor_flags,
+    is_terminal,
+    move_int64,
+    step_int64,
+)
 from games.rl_2048.environment.symmetry_2048 import (
     game_symmetries_for,
 )
@@ -132,19 +138,31 @@ class Game2048(Game):
         if self.done:
             raise RuntimeError("step() called after game over")
         assert 0 <= action <= 3
-        new_grid, reward, moved = self._simulate_move(self.state.grid, action)
-        new_grid = np.array(new_grid, copy=True, order="C")
-        self._state = State2048(grid=new_grid)
-        self.total_score += reward
-        if moved:
-            self._add_random_tile(self._state._grid)
-        self._state._grid.flags.writeable = False
-        self.done = self._is_game_over()
+        grid = self.state.grid
+        if grid.dtype == np.int64:
+            new_grid = np.zeros(grid.shape, dtype=np.int64)
+            reward, moved, terminated = step_int64(grid, action, self.rng, new_grid)
+            # The kernel validates its output; adopt the NumPy-owned board.
+            self._state = State2048.__new__(State2048)
+            self._state._grid = new_grid
+            new_grid.flags.writeable = False
+            reward = np.int64(reward)
+            self.total_score += reward
+            self.done = bool(terminated)
+        else:
+            # Preserve the original dtype and overflow behavior for other boards.
+            new_grid, reward, moved = self._simulate_move_numpy(grid, action)
+            self._state = State2048(grid=np.array(new_grid, copy=True, order="C"))
+            self.total_score += reward
+            if moved:
+                self._add_random_tile(self._state._grid)
+            self._state._grid.flags.writeable = False
+            self.done = self._is_game_over()
         return StepResult(
             next_state=self.state,
             reward=reward,
             terminated=self.done,
-            action_applied=moved,
+            action_applied=bool(moved),
         )
 
     def current_state(self) -> State:
@@ -170,24 +188,10 @@ class Game2048(Game):
 
     def _compute_legal_actions(self, grid: np.ndarray) -> list:
         """Return legal directions using adjacent cells, without simulating moves."""
-        # A tile can slide when a zero directly precedes/follows a nonzero
-        # along the destination direction; merges use the same adjacent pairs.
-        left = grid[:, :-1]
-        right = grid[:, 1:]
-        top = grid[:-1, :]
-        bottom = grid[1:, :]
-        horizontal_merge = np.any((left != 0) & (left == right))
-        vertical_merge = np.any((top != 0) & (top == bottom))
-        legal = []
-        if horizontal_merge or np.any((left == 0) & (right != 0)):
-            legal.append(0)
-        if vertical_merge or np.any((top == 0) & (bottom != 0)):
-            legal.append(1)
-        if horizontal_merge or np.any((left != 0) & (right == 0)):
-            legal.append(2)
-        if vertical_merge or np.any((top != 0) & (bottom == 0)):
-            legal.append(3)
-        return legal
+        # Numba needs native byte order; keep the installed board unchanged.
+        if not grid.dtype.isnative:
+            grid = grid.astype(grid.dtype.newbyteorder("="))
+        return [action for action, legal in enumerate(legal_neighbor_flags(grid)) if legal]
 
     def action_name(self, action: int) -> str:
         return self.ACTION_NAMES[action]
@@ -201,6 +205,15 @@ class Game2048(Game):
         )
 
     def _simulate_move(
+        self, grid: np.ndarray, action: int
+    ) -> Tuple[np.ndarray, int, bool]:
+        if grid.dtype == np.int64 and 0 <= action <= 3:
+            moved_grid = np.zeros(grid.shape, dtype=np.int64)
+            reward, moved = move_int64(grid, action, moved_grid)
+            return moved_grid, np.int64(reward), moved
+        return self._simulate_move_numpy(grid, action)
+
+    def _simulate_move_numpy(
         self, grid: np.ndarray, action: int
     ) -> Tuple[np.ndarray, int, bool]:
         rotated = np.rot90(grid, k=action)
@@ -233,13 +246,9 @@ class Game2048(Game):
 
     def _is_game_over(self) -> bool:
         grid = self.state.grid
-        if not np.any(grid):
-            return True
-        if np.any(grid == 0):
-            return False
-        horizontal_merge = np.any(grid[:, :-1] == grid[:, 1:])
-        vertical_merge = np.any(grid[:-1, :] == grid[1:, :])
-        return not (horizontal_merge or vertical_merge)
+        if not grid.dtype.isnative:
+            grid = grid.astype(grid.dtype.newbyteorder("="))
+        return bool(is_terminal(grid))
 
     def _add_random_tile(self, grid: np.ndarray) -> bool:
         if not grid.flags.writeable:

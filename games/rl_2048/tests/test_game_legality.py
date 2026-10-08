@@ -282,13 +282,6 @@ class TestGameLegality(unittest.TestCase):
         ):
             game.step(0)
 
-    def test_step_simulates_only_the_executed_move(self):
-        game = Game2048(seed=6)
-        original = game._simulate_move
-        with patch.object(game, "_simulate_move", wraps=original) as simulate:
-            game.step(0)
-            simulate.assert_called_once()
-
     def test_seeded_gameplay_matches_simulation_legality(self):
         for shape in ((4, 4), (3, 5), (1, 4)):
             for seed in (0, 23, 109):
