@@ -6,9 +6,9 @@ The trainer writes TensorBoard event files into each run's
 exploration, learning rate, iteration time, and evaluation scores. Most PPO
 metrics are averaged across the update epochs in each outer iteration;
 `approximate_kl` and `clip_fraction` use the final update epoch's values. The
-The `ppo/update_epochs` series records how many update epochs completed in each
-iteration, including iterations that stopped early at the KL threshold.
-positive `entropy` series is logged without the redundant `negative_entropy`
+`ppo/update_epochs` series records how many update epochs completed in each
+outer iteration, including iterations that stopped early at the KL threshold.
+The positive `entropy` series is logged without the redundant `negative_entropy`
 series. PyTorch's
 `SummaryWriter` produces the event files TensorBoard reads; see the
 [PyTorch TensorBoard documentation](https://docs.pytorch.org/docs/2.14/tensorboard.html).
@@ -38,31 +38,31 @@ once a run looks promising.
 
 ## Open the charts from your computer
 
-In a second Pod terminal, from the repository root, start TensorBoard listening
-only inside the Pod:
+The training agent starts TensorBoard detached on the Pod, bound to
+`127.0.0.1:6006`, with `artifacts/ppo_2048` as its log directory. It writes the
+server log to `/workspace/tensorboard.log` and verifies that the HTTP endpoint
+responds. If TensorBoard is already running, it reuses it; the server discovers
+new event files automatically.
+
+On your computer, run the simple SSH tunnel command with the Pod IP and port
+from the Pod's **SSH over exposed TCP** details in Runpod's Connect tab. This
+forwards local port 6007 to Pod port 6006 and discards the host key instead of
+adding it to `~/.ssh/known_hosts`:
 
 ```sh
-tensorboard --logdir artifacts/ppo_2048 --host 127.0.0.1 --port 6006 --reload_interval 5
+ssh -N -L 6007:127.0.0.1:6006 -p <SSH_PORT> -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o LogLevel=ERROR root@<POD_PUBLIC_IP>
 ```
 
-For access from your computer, use the Pod's **full SSH (public IP)** connection
-details from Runpod's Connect tab. Full SSH needs a public IP and an SSH daemon;
-Runpod's official PyTorch template is preconfigured, while a custom template
-needs TCP port 22 exposed. Their [SSH guide](https://docs.runpod.io/pods/configuration/use-ssh)
-has the current setup details.
-
-On your computer, open another terminal and create a local SSH tunnel. Replace
-the placeholders with the `root@IP`, port, and key from the Pod's **SSH over
-exposed TCP** command:
-
-```sh
-ssh -N -L 6006:127.0.0.1:6006 -p <SSH_PORT> -i <SSH_KEY_PATH> root@<POD_PUBLIC_IP>
-```
-
-Keep that terminal open, then open <http://localhost:6006> in your browser. This
-keeps TensorBoard off Runpod's public HTTP proxy. Runpod notes that exposed HTTP
-services are reachable over the internet, so the tunnel avoids publishing an
-unauthenticated dashboard ([port exposure guide](https://docs.runpod.io/pods/configuration/expose-ports)).
+Because this skips SSH host-key verification, use it only for this disposable
+Runpod tunnel. Keep the terminal open and visit <http://localhost:6007>. Press
+**Ctrl+C** to close only the tunnel; training, TensorBoard, and the Pod
+continue running. If SSH needs a specific identity, add `-i <SSH_KEY_PATH>` to
+the command. Full SSH requires a public IP and SSH access enabled on the Pod;
+Runpod's
+[SSH guide](https://docs.runpod.io/pods/configuration/use-ssh) covers setup.
+The tunnel keeps TensorBoard off Runpod's public HTTP proxy, where exposed HTTP
+services are reachable over the internet
+([port exposure guide](https://docs.runpod.io/pods/configuration/expose-ports)).
 
 ## Stop a run and keep its checkpoint
 

@@ -65,8 +65,33 @@ GPU's datacenter and attach it when creating the Pod.
    a time limit, not a completion detector; choose enough time for the run,
    final evaluation, and artifact manifest. Prefer the current RunPod CLI or
    MCP capability that supports the field.
-7. Observe progress through Pod logs or TensorBoard while the Pod is running.
-   Do not rely on the observing session to perform final cleanup. The wrapper
+7. Start TensorBoard on the Pod and give the user only the local SSH tunnel
+   command. Bind TensorBoard to `127.0.0.1:6006`, using
+   `artifacts/ppo_2048` as the log directory and `/workspace/tensorboard.log`
+   for its server log. Reuse it if HTTP at `127.0.0.1:6006` already responds;
+   otherwise start it detached with the same Python environment that has
+   TensorBoard installed, for example:
+
+   ```sh
+   cd /workspace/ml-playground
+   nohup .venv/bin/tensorboard \
+     --logdir artifacts/ppo_2048 \
+     --host 127.0.0.1 \
+     --port 6006 \
+     --reload_interval 5 \
+     > /workspace/tensorboard.log 2>&1 < /dev/null &
+   ```
+
+   Verify the HTTP endpoint responds and that event files exist under
+   `artifacts/ppo_2048`. Then provide the user a local tunnel command using the
+   current Pod's **SSH over exposed TCP** address and port, in the form
+   `ssh -N -L 6007:127.0.0.1:6006 -p <SSH_PORT> root@<POD_PUBLIC_IP>`; they open
+   `http://localhost:6007`. If the user does not want a permanent
+   `~/.ssh/known_hosts` entry, use the non-persistent SSH options shown in
+   `documents/TENSORBOARD.md` and explain that they skip host-key verification.
+   TensorBoard continues in the background when the user's
+   tunnel closes, and stops when its Pod is stopped or deleted. Do not rely on
+   the observing session to perform final cleanup. The wrapper
    writes status and checksums after the training process exits, verifies the
    manifest, then asks RunPod to delete the Pod. If deletion fails, it tries
    the legacy CLI spelling and then tries stopping the Pod. The `--stop-after`

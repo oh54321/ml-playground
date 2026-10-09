@@ -8,3 +8,9 @@ RunPod plugin skill. Verify the Pod has the intended Network Volume mounted at
 complete run artifacts are checksummed before Pod cleanup. Never delete the
 Network Volume as part of Pod cleanup. Use a time-based Pod stop limit as a
 fallback, and recheck current GPU, Pod, volume, and CLI state before each launch.
+
+While a RunPod training Pod is available for monitoring, start or reuse a
+detached TensorBoard server on the Pod as described in
+[`documents/TENSORBOARD.md`](documents/TENSORBOARD.md). Verify it responds
+before giving the user a simple local SSH tunnel command; do not ask the user
+to start TensorBoard in a separate Pod terminal.
