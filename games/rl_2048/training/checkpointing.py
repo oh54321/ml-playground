@@ -44,6 +44,7 @@ def save_checkpoint(
     mean_moves: float | None,
     symmetry_augmentation: str | None = None,
     exploration_schedule: dict | None = None,
+    win_rate_2048: float | None = None,
 ) -> None:
     """Atomically save the state needed to inspect or warm-start a run."""
     evaluation_values = (mean_score, median_score, mean_moves)
@@ -61,6 +62,7 @@ def save_checkpoint(
             "mean_score": mean_score,
             "median_score": median_score,
             "mean_moves": mean_moves,
+            "win_rate_2048": win_rate_2048,
         },
         "evaluation_iteration": (
             outer_iteration

@@ -25,6 +25,7 @@ class CompletedGame:
     steps: int
     seed: int
     trace: str | None = None
+    max_tile: int = 0
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,12 @@ class EvaluationResult:
     moves: list[int]
     worst_game: CompletedGame
     best_game: CompletedGame
+    max_tiles: list[int]
+
+    @property
+    def win_rate(self) -> float:
+        """Fraction of games whose terminal board reached 2048 or higher."""
+        return sum(tile >= 2048 for tile in self.max_tiles) / len(self.max_tiles)
 
 
 @dataclass
@@ -48,6 +55,7 @@ class EvaluationRun:
             "best": [],
             "worst": [],
             "mean_moves": [],
+            "win_rate": [],
         }
     )
     iterations: list[int] = field(default_factory=list)
@@ -140,6 +148,7 @@ def _evaluate_games(
                 continue
 
             score = int(game.total_score)
+            max_tile = int(game.state.grid.max())
             trace = None
             if save_traces:
                 traces_by_game[game_number].extend(
@@ -160,6 +169,7 @@ def _evaluate_games(
                 score=score,
                 steps=steps_by_game[game_number],
                 seed=seeds_by_number[game_number],
+                max_tile=max_tile,
                 trace=trace,
             )
             del games[game_number]
@@ -174,4 +184,5 @@ def _evaluate_games(
         moves=[game.steps for game in games_in_order],
         worst_game=worst_game,
         best_game=best_game,
+        max_tiles=[game.max_tile for game in games_in_order],
     )

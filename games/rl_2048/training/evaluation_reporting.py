@@ -13,6 +13,13 @@ from games.rl_2048.utils.plot_training_diagnostics import save_evaluation_plots
 from games.rl_2048.utils.reporting import print_timestamp
 
 
+def write_evaluation_scalars(writer, evaluation: EvaluationRun, iteration: int) -> None:
+    """Write the completed evaluation's metrics to a TensorBoard writer."""
+    for metric, values in evaluation.history.items():
+        if values:
+            writer.add_scalar(f"evaluation/{metric}", values[-1], iteration)
+
+
 def evaluate_and_report(
     ppo: PPO,
     model: ActorCriticModel,
@@ -55,11 +62,13 @@ def evaluate_and_report(
         mean_score = sum(scores) / len(scores)
         median_score = median(scores)
         mean_moves = sum(result.moves) / len(result.moves)
+        win_rate = result.win_rate
         evaluation.history["mean"].append(mean_score)
         evaluation.history["median"].append(median_score)
         evaluation.history["best"].append(result.best_game.score)
         evaluation.history["worst"].append(result.worst_game.score)
         evaluation.history["mean_moves"].append(mean_moves)
+        evaluation.history["win_rate"].append(win_rate)
         evaluation.iterations.append(outer_iteration)
         save_evaluation_plots(
             evaluation.history,
@@ -81,6 +90,7 @@ def evaluate_and_report(
                 mean_moves,
                 evaluation.symmetry_augmentation,
                 evaluation.exploration_schedule,
+                win_rate_2048=win_rate,
             )
             print(f"  Saved new best checkpoint: {evaluation.output_dir / 'best.pt'}")
 
@@ -96,6 +106,7 @@ def evaluate_and_report(
             mean_moves,
             evaluation.symmetry_augmentation,
             evaluation.exploration_schedule,
+            win_rate_2048=win_rate,
         )
 
         traces_location = str(evaluation_dir) if evaluation.save_traces else "disabled"
@@ -104,6 +115,8 @@ def evaluate_and_report(
             f"Mean score: {mean_score:.1f}\n"
             f"Median score: {median_score:.1f}\n"
             f"Mean moves: {mean_moves:.1f}\n"
+            f"Win rate (2048+): {win_rate:.1%} "
+            f"({sum(tile >= 2048 for tile in result.max_tiles)}/{len(result.max_tiles)} games)\n"
             f"Raw scores: {scores}\n"
             f"Best game: score {result.best_game.score}, steps {result.best_game.steps}, "
             f"seed {result.best_game.seed}\n"
@@ -115,7 +128,8 @@ def evaluate_and_report(
             summary_file.write(summary)
         print(
             f"  Evaluation mean score: {mean_score:.1f}; "
-            f"median score: {median_score:.1f}; mean moves: {mean_moves:.1f}"
+            f"median score: {median_score:.1f}; mean moves: {mean_moves:.1f}; "
+            f"win rate (2048+): {win_rate:.1%}"
         )
         print(f"  Evaluation raw scores: {scores}")
         print(

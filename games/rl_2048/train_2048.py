@@ -16,7 +16,10 @@ from core.models.d4_conv_actor_critic import D4ConvActorCriticModel
 from games.rl_2048.environment.symmetry_2048 import SQUARE_SYMMETRY_SPECS
 from games.rl_2048.training.checkpointing import save_checkpoint
 from games.rl_2048.training.config import NO_UNIFORM_EXPLORATION, TrainingConfig
-from games.rl_2048.training.evaluation_reporting import evaluate_and_report
+from games.rl_2048.training.evaluation_reporting import (
+    evaluate_and_report,
+    write_evaluation_scalars,
+)
 from games.rl_2048.training.options import read_training_options
 from games.rl_2048.training.setup import prepare_training_run, select_device
 from games.rl_2048.training.schedulers import FloorExponentialLR
@@ -209,6 +212,11 @@ def main() -> None:
                         *evaluation_metrics,
                         config.symmetry_augmentation,
                         run.exploration_data,
+                        win_rate_2048=(
+                            run.evaluation.history["win_rate"][evaluation_index]
+                            if evaluation_index is not None
+                            else None
+                        ),
                     )
 
                 if writer is not None:
@@ -254,10 +262,7 @@ def main() -> None:
                             "ppo/policy_kl_between_iterations", policy_kl, iteration
                         )
                     if run.evaluation.iterations and run.evaluation.iterations[-1] == iteration:
-                        for metric, values in run.evaluation.history.items():
-                            writer.add_scalar(
-                                f"evaluation/{metric}", values[-1], iteration
-                            )
+                        write_evaluation_scalars(writer, run.evaluation, iteration)
                     writer.flush()
     except KeyboardInterrupt:
         interrupted = True
@@ -293,6 +298,12 @@ def main() -> None:
             *final_evaluation_metrics,
             config.symmetry_augmentation,
             run.exploration_data,
+            win_rate_2048=(
+                run.evaluation.history["win_rate"][final_index]
+                if run.evaluation.iterations
+                and run.evaluation.iterations[-1] == final_iteration
+                else None
+            ),
         )
     save_training_diagnostic_plots(
         run.raw_summary_path,

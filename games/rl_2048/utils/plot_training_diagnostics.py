@@ -89,6 +89,7 @@ def save_line_plot(
     x_label: str = "Outer training iteration",
     y_label: str = "Value",
     y_min: float | None = None,
+    y_max: float | None = None,
     reference_lines: Sequence[tuple[float, str, tuple[int, int, int]]] = (),
 ) -> None:
     """Save a readable standalone line chart without requiring matplotlib."""
@@ -106,7 +107,7 @@ def save_line_plot(
     else:
         padding = (data_max - data_min) * 0.08
     plot_low = y_min if y_min is not None else data_min - padding
-    plot_high = data_max + padding
+    plot_high = y_max if y_max is not None else data_max + padding
     if plot_low == plot_high:
         plot_high = plot_low + 1.0
 
@@ -192,15 +193,32 @@ def save_evaluation_plots(
         ("best", "Best evaluation game score", "evaluation_best_score.png", "Score (points)"),
         ("worst", "Worst evaluation game score", "evaluation_worst_score.png", "Score (points)"),
         ("mean_moves", "Mean evaluation game length", "evaluation_mean_moves.png", "Moves"),
+        (
+            "win_rate",
+            "Evaluation win rate (2048+)",
+            "evaluation_win_rate.png",
+            "Games reaching 2048 (%)",
+        ),
     )
     for metric, title, filename, y_label in plot_details:
+        if metric not in evaluation_history:
+            continue
         save_line_plot(
             output_dir / filename,
             evaluation_iterations,
-            [(metric.replace("_", " ").title(), evaluation_history[metric], _COLORS[0])],
+            [
+                (
+                    metric.replace("_", " ").title(),
+                    [value * 100 for value in evaluation_history[metric]]
+                    if metric == "win_rate"
+                    else evaluation_history[metric],
+                    _COLORS[0],
+                )
+            ],
             title,
             y_label=y_label,
             y_min=0,
+            y_max=100 if metric == "win_rate" else None,
         )
 
 
@@ -299,6 +317,22 @@ def _parse_evaluation_summary(path: Path) -> tuple[list[int], list[list[float]]]
             iterations.append(current_iteration)
             scores.append([float(value) for value in values])
     return iterations, scores
+
+
+def _parse_evaluation_win_rates(path: Path) -> tuple[list[int], list[float]]:
+    iterations: list[int] = []
+    rates: list[float] = []
+    current_iteration: int | None = None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        match = re.match(r"^Outer iteration (\d+)$", line)
+        if match:
+            current_iteration = int(match.group(1))
+            continue
+        rate_match = re.match(r"^Win rate \(2048\+\): ([0-9.]+)%", line)
+        if current_iteration is not None and rate_match:
+            iterations.append(current_iteration)
+            rates.append(float(rate_match.group(1)))
+    return iterations, rates
 
 
 def _series(records: list[dict[str, object]], key: str, end: bool = False) -> list[float]:
@@ -400,6 +434,17 @@ def save_training_diagnostic_plots(
             ):
                 quantile_series.append((label, [_quantile(scores, quantile) for scores in score_sets], color))
             save_line_plot(output_dir / "evaluation_score_quantiles.png", evaluation_iterations, quantile_series, "Evaluation score distribution", y_label="Score (points)", y_min=0)
+        win_iterations, win_rates = _parse_evaluation_win_rates(evaluation_summary_path)
+        if win_iterations:
+            save_line_plot(
+                output_dir / "evaluation_win_rate.png",
+                win_iterations,
+                [("Win rate", win_rates, _COLORS[0])],
+                "Evaluation win rate (2048+)",
+                y_label="Games reaching 2048 (%)",
+                y_min=0,
+                y_max=100,
+            )
 
 
 def _quantile(values: Sequence[float], quantile: float) -> float:

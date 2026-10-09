@@ -11,6 +11,11 @@ series. PyTorch's
 `SummaryWriter` produces the event files TensorBoard reads; see the
 [PyTorch TensorBoard documentation](https://docs.pytorch.org/docs/2.14/tensorboard.html).
 
+Evaluation logs `evaluation/win_rate`, the fraction of games whose terminal
+board reached 2048 or a higher tile. Each run also saves
+`evaluation_win_rate.png`. Older checkpoints do not contain this metric, and
+their win rate cannot be recovered from scores.
+
 ## Start a monitored run
 
 From the repository root on the Pod, install the optional dependency and start

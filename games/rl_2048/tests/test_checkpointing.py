@@ -66,14 +66,40 @@ class CheckpointingTests(unittest.TestCase):
         self.assertEqual(checkpoint["outer_iteration"], 3)
         self.assertEqual(
             checkpoint["evaluation"],
-            {"mean_score": None, "median_score": None, "mean_moves": None},
+            {
+                "mean_score": None,
+                "median_score": None,
+                "mean_moves": None,
+                "win_rate_2048": None,
+            },
         )
         self.assertIsNone(checkpoint["evaluation_iteration"])
         self.assertIn("state", checkpoint["optimizer_state_dict"])
 
+        with tempfile.TemporaryDirectory() as evaluated_directory:
+            evaluated_path = Path(evaluated_directory) / "evaluated.pt"
+            save_checkpoint(
+                evaluated_path,
+                model,
+                optimizer,
+                ppo_config,
+                model_config,
+                outer_iteration=4,
+                mean_score=12.0,
+                median_score=10.0,
+                mean_moves=20.0,
+                win_rate_2048=0.25,
+            )
+            evaluated = torch.load(
+                evaluated_path, map_location="cpu", weights_only=True
+            )
+        self.assertEqual(evaluated["evaluation"]["win_rate_2048"], 0.25)
+
         # Older checkpoints omitted observation_encoding; they must continue
-        # to mean the original numeric log2 input when warm-started.
+        # to mean the original numeric log2 input when warm-started. They also
+        # lack the win-rate field, which warm-starting does not require.
         checkpoint["resnet_config"].pop("observation_encoding")
+        checkpoint["evaluation"].pop("win_rate_2048")
         legacy_model = model_from_legacy_config(checkpoint["resnet_config"])
         legacy_model.load_state_dict(checkpoint["model_state_dict"], strict=True)
         with tempfile.TemporaryDirectory() as legacy_directory:
