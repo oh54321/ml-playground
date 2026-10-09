@@ -54,12 +54,12 @@ MODEL_CONFIG = ConvActorCriticConfig(
 )
 
 TRAINING_CONFIG = TrainingConfig(
-    run_name="one_hot_minLR_3e-5_maxEpoch_20",
+    run_name="one_hot_minLR_3e-5_rollout_64x1024",
     learning_rate=3e-4,
     seed=12345,
     outer_iterations=4000,  # Last outer iteration to run, inclusive.
     warm_start_from=None,
-    num_parallel_games=32,
+    num_parallel_games=64,
     steps_per_game_per_rollout=1024,
     symmetry_augmentation="step",
     exploration_schedule=NO_UNIFORM_EXPLORATION,
@@ -80,10 +80,10 @@ PPO_SETTINGS = {
     "value_coefficient": 0.003,
     "entropy_coefficient": 0.03,
     "min_update_epochs": 1,
-    "max_update_epochs": 20,
+    "max_update_epochs": 8,
     "target_kl": 0.02,
     "max_episode_steps": 2**20,
-    "mini_batch_size": 4096,
+    "mini_batch_size": 8192,
     "reward_multiplier": 0.01,
     "value_transform": "identity",
     "denominator_epsilon": 1e-8,
