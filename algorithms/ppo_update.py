@@ -41,14 +41,32 @@ class PPOUpdater:
     def device(self) -> torch.device:
         return next(self.model.parameters()).device
 
+    def prepare_batch(
+        self,
+        steps: List[PolicyRolloutInformation] | dict[str, torch.Tensor],
+    ) -> dict[str, torch.Tensor]:
+        """Assemble rollout tensors once; already prepared batches pass through."""
+        if isinstance(steps, dict):
+            return steps
+        collector = self.rollout_collector
+        return {
+            "observations": collector.state_batch_tensor([step.state for step in steps]),
+            "advantages": collector.steps_to_tensor(steps, "advantage"),
+            "old_log_probs": collector.steps_to_tensor(steps, "log_prob"),
+            "illegal_actions_mask": collector.steps_to_tensor(steps, "legal_actions_mask", dtype=torch.bool),
+            "actions": collector.steps_to_tensor(steps, "action", dtype=torch.long),
+            "values": collector.steps_to_tensor(steps, "value"),
+        }
+
     def run_epoch(
         self,
-        policy_rollout_information_list: List[PolicyRolloutInformation],
+        policy_rollout_information_list: List[PolicyRolloutInformation] | dict[str, torch.Tensor],
         advantage_mean: float,
         advantage_std: float,
         measure_gradient_diagnostics: bool = False,
     ) -> EpochStatistics:
-        shuffled_rollouts = self.rng.permutation(policy_rollout_information_list)
+        data = self.prepare_batch(policy_rollout_information_list)
+        shuffled_indices = self.rng.permutation(len(data["actions"]))
         policy_objectives = []
         value_objectives = []
         entropy_objectives = []
@@ -56,8 +74,12 @@ class PPOUpdater:
         outside_ranges = []
         value_errors = []
         value_targets = []
-        for i in range(0, len(shuffled_rollouts), self.config.mini_batch_size):
-            minibatch = shuffled_rollouts[i : i + self.config.mini_batch_size]
+        for i in range(0, len(shuffled_indices), self.config.mini_batch_size):
+            indices = torch.as_tensor(
+                shuffled_indices[i : i + self.config.mini_batch_size],
+                device=self.device(), dtype=torch.long,
+            )
+            minibatch = {name: tensor.index_select(0, indices) for name, tensor in data.items()}
             self.optimizer.zero_grad()
             objectives = self.compute_objective(minibatch, advantage_mean, advantage_std)
             policy_objectives.append(objectives.policy.detach())
@@ -211,28 +233,23 @@ class PPOUpdater:
 
     def compute_objective(
         self,
-        steps: List[PolicyRolloutInformation],
+        steps: List[PolicyRolloutInformation] | dict[str, torch.Tensor],
         advantage_mean: float,
         advantage_std: float,
     ) -> BatchObjectives:
-        advantages = self.rollout_collector.steps_to_tensor(steps, "advantage")
+        data = self.prepare_batch(steps)
+        advantages = data["advantages"]
         normalized_advantages = (advantages - advantage_mean) / (advantage_std + self.config.denominator_epsilon)
-        old_policy_log_probs = self.rollout_collector.steps_to_tensor(steps, "log_prob")
+        old_policy_log_probs = data["old_log_probs"]
         # dimension 0 is the batch dimension
-        actor_critic_output: ActorCriticOutput = self.model(
-            self.rollout_collector.state_batch_tensor([step.state for step in steps])
-        )
+        actor_critic_output: ActorCriticOutput = self.model(data["observations"])
         action_logits = actor_critic_output.action_logits
         transformed_predicted_values = actor_critic_output.value
         predicted_values = self.rollout_collector.untransform_predicted_value(transformed_predicted_values)
-        legal_actions_mask = self.rollout_collector.steps_to_tensor(
-            steps,
-            "legal_actions_mask",
-            dtype=torch.bool,
-        )
+        legal_actions_mask = data["illegal_actions_mask"]
         action_logits = action_logits.masked_fill(legal_actions_mask, -torch.inf)
         log_probs = self.rollout_collector.action_log_probabilities(action_logits, legal_actions_mask)
-        sampled_actions = self.rollout_collector.steps_to_tensor(steps, "action", dtype=torch.long)
+        sampled_actions = data["actions"]
         current_log_prob = log_probs[torch.arange(log_probs.shape[0], device=self.device()), sampled_actions]
         clip_multiplier = torch.where(normalized_advantages > 0, 1 + self.config.clip_epsilon, 1 - self.config.clip_epsilon)
         advantage_clip = clip_multiplier * normalized_advantages
@@ -240,7 +257,7 @@ class PPOUpdater:
         probability_ratio = torch.exp(-approximate_kl)
         policy_objective = -torch.minimum(probability_ratio * normalized_advantages, advantage_clip)
         outside_clip_range = torch.abs(probability_ratio - 1) > self.config.clip_epsilon
-        values = self.rollout_collector.steps_to_tensor(steps, "value")
+        values = data["values"]
         value_target = advantages + values
         transformed_value_target = transform_value_target(
             value_target,

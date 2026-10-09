@@ -128,7 +128,7 @@ class PPO:
 
     def run_epoch(
         self,
-        policy_rollout_information_list: List[PolicyRolloutInformation],
+        policy_rollout_information_list: List[PolicyRolloutInformation] | dict[str, torch.Tensor],
         advantage_mean: float,
         advantage_std: float,
         measure_gradient_diagnostics: bool = False,
@@ -176,6 +176,7 @@ class PPO:
         self._print_timestamp("Outer iteration starting; collecting rollouts.")
         rollouts, advantage_mean, advantage_std = self.collect_batched_information()
         old_policy_log_probabilities = self.updater.policy_log_probabilities(rollouts)
+        training_batch = self.updater.prepare_batch(rollouts)
         self._print_timestamp("Rollouts collected; starting PPO updates.")
         epoch_stats = []
         self.updater.last_gradient_statistics = None
@@ -184,7 +185,7 @@ class PPO:
 
         for epoch in range(1, self.config.max_update_epochs + 1):
             current_epoch_stats = self.run_epoch(
-                rollouts,
+                training_batch,
                 advantage_mean,
                 advantage_std,
                 measure_gradient_diagnostics=epoch == 1,
