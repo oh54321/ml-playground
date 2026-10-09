@@ -230,6 +230,9 @@ def main() -> None:
                     writer.add_scalar(
                         "training/exploration_probability", probability, iteration
                     )
+                    writer.add_scalar(
+                        "ppo/update_epochs", len(epoch_stats), iteration
+                    )
                     if epoch_stats:
                         # These diagnostics describe the final PPO update epoch;
                         # averaging them across epochs hides the stopping-point value.

@@ -6,6 +6,8 @@ The trainer writes TensorBoard event files into each run's
 exploration, learning rate, iteration time, and evaluation scores. Most PPO
 metrics are averaged across the update epochs in each outer iteration;
 `approximate_kl` and `clip_fraction` use the final update epoch's values. The
+The `ppo/update_epochs` series records how many update epochs completed in each
+iteration, including iterations that stopped early at the KL threshold.
 positive `entropy` series is logged without the redundant `negative_entropy`
 series. PyTorch's
 `SummaryWriter` produces the event files TensorBoard reads; see the
