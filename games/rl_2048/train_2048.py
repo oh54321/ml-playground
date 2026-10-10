@@ -54,21 +54,21 @@ MODEL_CONFIG = ConvActorCriticConfig(
 )
 
 TRAINING_CONFIG = TrainingConfig(
-    run_name="one_hot_minLR_3e-5_rollout_64x1024",
+    run_name="one_hot_noLRfloor_rollout_64x1024_from2000",
     learning_rate=3e-4,
     seed=12345,
     outer_iterations=4000,  # Last outer iteration to run, inclusive.
     warm_start_from=None,
     num_parallel_games=64,
     steps_per_game_per_rollout=1024,
-    symmetry_augmentation=None,
+    symmetry_augmentation="step",
     exploration_schedule=NO_UNIFORM_EXPLORATION,
     evaluation_interval=10,
     evaluation_games=100,
     evaluation_seed=67890,
     save_traces=False,
     scheduler_decay=0.999,
-    min_learning_rate=3e-5,
+    min_learning_rate=None,
     # Preserve intermediate recovery points during the 4000-iteration run.
     saved_checkpoints=(500, 1000, 1500, 2000, 2500, 3000, 3500),
 )
