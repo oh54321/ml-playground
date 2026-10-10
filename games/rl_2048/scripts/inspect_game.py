@@ -74,6 +74,11 @@ def _entropy(probabilities: torch.Tensor) -> float:
 
 
 def _find_game_seed(summary_path: Path, iteration: int, game_kind: str) -> tuple[int, int]:
+    seed, score, _ = _find_game_result(summary_path, iteration, game_kind)
+    return seed, score
+
+
+def _find_game_result(summary_path: Path, iteration: int, game_kind: str) -> tuple[int, int, int]:
     text = summary_path.read_text(encoding="utf-8")
     block_match = re.search(
         rf"Outer iteration {iteration}\n(?P<block>.*?)(?=\nOuter iteration |\Z)",
@@ -89,7 +94,7 @@ def _find_game_seed(summary_path: Path, iteration: int, game_kind: str) -> tuple
     )
     if match is None:
         raise ValueError(f"No {game_kind}-game seed found for outer iteration {iteration}")
-    return int(match.group(3)), int(match.group(1))
+    return int(match.group(3)), int(match.group(1)), int(match.group(2))
 
 
 def _parse_evaluation_trace(trace_path: Path) -> dict:
@@ -313,14 +318,16 @@ def replay_game(
     return {
         "seed": seed,
         "final_score": int(game.total_score),
+        "final_board": game.state.grid.tolist(),
+        "max_tile": int(game.state.grid.max()),
         "steps": steps,
         "checkpoint_iteration": checkpoint.get("outer_iteration"),
         "value_transform": value_transform,
     }
 
 
-def _render_html(report: dict, output_path: Path) -> None:
-    report_json = json.dumps(report, separators=(",", ":"))
+def _render_html(report: dict, output_path: Path, *, reports: list[dict] | None = None) -> None:
+    report_json = json.dumps(reports or [report], separators=(",", ":"))
     title = html.escape(
         f"2048 policy inspection — score {report['final_score']} — seed {report['seed']}"
     )
@@ -334,7 +341,7 @@ def _render_html(report: dict, output_path: Path) -> None:
 body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 24px; color: #202124; background: #f7f7f7; }}
 h1 {{ font-size: 22px; margin: 0 0 8px; }}
 .muted {{ color: #666; margin-bottom: 18px; }}
-.controls {{ display: flex; gap: 12px; align-items: center; margin: 12px 0 20px; }}
+.controls {{ display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 12px 0 20px; }}
 button, input {{ font: inherit; }}
 button {{ padding: 7px 12px; }}
 #stepSlider {{ flex: 1; }}
@@ -359,9 +366,13 @@ button {{ padding: 7px 12px; }}
 </style>
 </head>
 <body>
-<h1>{title}</h1>
+<h1 id="title">{title}</h1>
 <div class="muted">Use the slider or arrow buttons to inspect the deterministic policy at every move. Activation maps show the final policy-trunk output (shared with the critic only in shared-trunk models).</div>
+<div id="provenance" class="muted"></div>
 <div class="controls">
+  <select id="gameSelector" aria-label="Game"></select>
+  <button id="play">Play</button>
+  <select id="speed" aria-label="Playback speed"><option value="500">2 moves/sec</option><option value="150" selected>7 moves/sec</option><option value="50">20 moves/sec</option></select>
   <button id="previous">Previous</button>
   <input id="stepSlider" type="range" min="0" max="0" value="0">
   <button id="next">Next</button>
@@ -369,10 +380,11 @@ button {{ padding: 7px 12px; }}
 </div>
 <div class="layout">
   <section class="panel">
+    <div id="boardLabel" class="muted">Board before move</div>
     <div id="board" class="board"></div>
     <div id="metrics" class="metric-grid"></div>
   </section>
-  <section class="panel">
+  <section id="diagnostics" class="panel">
     <h2>Action distribution</h2>
     <div id="probabilities"></div>
     <h2>Trunk activations</h2>
@@ -381,10 +393,36 @@ button {{ padding: 7px 12px; }}
 </div>
 <script id="report-data" type="application/json">{report_json}</script>
 <script>
-const report = JSON.parse(document.getElementById('report-data').textContent);
-const steps = report.steps;
+const reports = JSON.parse(document.getElementById('report-data').textContent);
+let report = reports[0];
+let steps = report.steps;
 const slider = document.getElementById('stepSlider');
-slider.max = Math.max(steps.length - 1, 0);
+const selector = document.getElementById('gameSelector');
+selector.hidden = reports.length === 1;
+selector.innerHTML = reports.map((item, index) => `<option value="${{index}}">${{item.game_kind || 'Replay'}} · ${{item.final_score.toLocaleString()}} points · ${{item.steps.length}} moves</option>`).join('');
+let timer = null;
+function pause() {{ clearInterval(timer); timer = null; document.getElementById('play').textContent = 'Play'; }}
+function play() {{
+  pause();
+  if (Number(slider.value) >= Number(slider.max)) render(0);
+  document.getElementById('play').textContent = 'Pause';
+  timer = setInterval(() => {{
+    render(Number(slider.value) + 1);
+    if (Number(slider.value) >= Number(slider.max)) pause();
+  }}, Number(document.getElementById('speed').value));
+}}
+function selectGame(index) {{
+  pause(); report = reports[index]; steps = report.steps;
+  slider.max = report.final_board ? steps.length : Math.max(steps.length - 1, 0);
+  const kind = report.game_kind ? report.game_kind[0].toUpperCase() + report.game_kind.slice(1) : 'Replay';
+  document.getElementById('title').textContent = `${{kind}} game · iteration ${{report.checkpoint_iteration}} · ${{report.final_score.toLocaleString()}} points`;
+  document.title = document.getElementById('title').textContent;
+  const expected = report.expected_score_from_summary;
+  const matches = expected === report.final_score && (report.expected_steps_from_summary == null || report.expected_steps_from_summary === steps.length);
+  const match = expected == null ? '' : matches ? ' · Score and move count match saved evaluation' : ` · Replay differs from saved evaluation`;
+  document.getElementById('provenance').textContent = `Seed ${{report.seed}} · ${{steps.length}} moves${{report.max_tile ? ' · Maximum tile ' + report.max_tile : ''}}${{match}}${{report.replay_source ? ' · ' + report.replay_source : ''}}`;
+  render(0);
+}}
 const actionNames = ['left', 'up', 'right', 'down'];
 const tileColors = {{0:'#cdc1b4',2:'#eee4da',4:'#ede0c8',8:'#f2b179',16:'#f59563',32:'#f67c5f',64:'#f65e3b',128:'#edcf72',256:'#edcc61',512:'#edc850',1024:'#edc53f',2048:'#edc22e'}};
 
@@ -404,6 +442,7 @@ function renderBoard(step) {{
 function renderMetrics(step, index) {{
   const values = [
     ['move', `${{index + 1}} / ${{steps.length}}`],
+    ['score before move', step.total_score - step.reward],
     ['score after move', step.total_score],
     ['action', step.action_name],
     ['reward', step.reward],
@@ -427,20 +466,32 @@ function renderActivations(step) {{
   const max = Math.max(...channels.flat(2).map(value => Math.abs(value)), 1e-8);
   document.getElementById('activations').innerHTML = channels.map((channel, index) => {{
     const cells = channel.flat().map(value => `<div class="activation-cell" title="${{Number(value).toFixed(3)}}" style="background:rgba(34,119,180,${{Math.min(Math.abs(value) / max, 1).toFixed(3)}})"></div>`).join('');
-    return `<div><div class="activation-title">channel ${{index}}</div><div class="activation-map">${{cells}}</div></div>`;
+    return `<div><div class="activation-title">${{report.activation_labels?.[index] || 'channel ' + index}}</div><div class="activation-map">${{cells}}</div></div>`;
   }}).join('');
 }}
 function render(index) {{
-  index = Math.max(0, Math.min(index, steps.length - 1));
+  index = Math.max(0, Math.min(index, Number(slider.max)));
   slider.value = index;
+  const terminal = index === steps.length;
+  document.getElementById('diagnostics').hidden = terminal;
+  document.getElementById('boardLabel').textContent = terminal ? 'Final board · game over' : 'Board before move';
+  if (terminal) {{
+    renderBoard({{board: report.final_board}});
+    document.getElementById('metrics').innerHTML = `<div><div class="metric-label">Final score</div><div class="metric-value">${{report.final_score.toLocaleString()}}</div></div><div><div class="metric-label">Maximum tile</div><div class="metric-value">${{report.max_tile}}</div></div>`;
+    document.getElementById('stepLabel').textContent = `Game over · ${{steps.length}} moves`;
+    return;
+  }}
   const step = steps[index];
   renderBoard(step); renderMetrics(step, index); renderProbabilities(step); renderActivations(step);
 }}
 slider.addEventListener('input', event => render(Number(event.target.value)));
+selector.addEventListener('change', event => selectGame(Number(event.target.value)));
+document.getElementById('play').addEventListener('click', () => timer === null ? play() : pause());
+document.getElementById('speed').addEventListener('change', () => {{ if (timer !== null) play(); }});
 document.getElementById('previous').addEventListener('click', () => render(Number(slider.value) - 1));
 document.getElementById('next').addEventListener('click', () => render(Number(slider.value) + 1));
 document.addEventListener('keydown', event => {{ if (event.key === 'ArrowLeft') render(Number(slider.value) - 1); if (event.key === 'ArrowRight') render(Number(slider.value) + 1); }});
-render(0);
+selectGame(0);
 </script>
 </body>
 </html>
@@ -456,6 +507,8 @@ def inspect_game(
     output_dir: Path | None = None,
     device: torch.device | None = None,
 ) -> Path:
+    if game_kind == "both" and seed is not None:
+        raise ValueError("--seed selects one game; omit it when inspecting both games")
     if checkpoint_path is None:
         checkpoint_path = run_dir / "final.pt"
         if not checkpoint_path.exists():
@@ -463,19 +516,33 @@ def inspect_game(
     device = device or torch.device("cpu")
     model, checkpoint = _load_checkpoint(checkpoint_path, device)
     checkpoint_iteration = int(checkpoint["outer_iteration"])
-    expected_score = None
-    if seed is None:
-        seed, expected_score = _find_game_seed(run_dir / "summary.txt", checkpoint_iteration, game_kind)
-    report = replay_game(model, checkpoint, seed, device)
-    report["game_kind"] = game_kind
-    report["checkpoint_path"] = str(checkpoint_path)
-    report["expected_score_from_summary"] = expected_score
+    reports = []
+    for kind in ("best", "worst") if game_kind == "both" else (game_kind,):
+        expected_score = None
+        expected_steps = None
+        game_seed = seed
+        if game_seed is None:
+            game_seed, expected_score, expected_steps = _find_game_result(run_dir / "summary.txt", checkpoint_iteration, kind)
+        report = replay_game(model, checkpoint, game_seed, device)
+        if expected_score is not None and (report["final_score"] != expected_score or len(report["steps"]) != expected_steps):
+            raise ValueError(
+                f"{kind} replay scored {report['final_score']} in {len(report['steps'])} moves, but iteration "
+                f"{checkpoint_iteration} recorded {expected_score} in {expected_steps} moves. Replay on the "
+                "original evaluation device/batch or use the archived trace; "
+                "this trajectory cannot be labeled as the saved game."
+            )
+        report["game_kind"] = kind
+        report["checkpoint_path"] = str(checkpoint_path)
+        report["expected_score_from_summary"] = expected_score
+        report["expected_steps_from_summary"] = expected_steps
+        report["replay_source"] = f"Recomputed on {device}"
+        reports.append(report)
     if output_dir is None:
-        output_dir = run_dir / "worst_game_inspection"
+        output_dir = run_dir / ("final_iteration_inspection" if game_kind == "both" else f"{game_kind}_game_inspection")
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "inspection.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    (output_dir / "inspection.json").write_text(json.dumps(reports if game_kind == "both" else reports[0], indent=2), encoding="utf-8")
     html_path = output_dir / "replay.html"
-    _render_html(report, html_path)
+    _render_html(reports[0], html_path, reports=reports)
     return html_path
 
 
@@ -484,16 +551,19 @@ def main() -> None:
     parser.add_argument("run_dir", type=Path, nargs="?")
     parser.add_argument("--checkpoint", type=Path, default=None)
     parser.add_argument("--seed", type=int, default=None)
-    parser.add_argument("--game", choices=("worst", "best"), default="worst")
+    parser.add_argument("--game", choices=("worst", "best", "both"), default="worst")
+    parser.add_argument("--device", default="cpu", help="Use the original evaluation device for faithful replay")
+    parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--trace", type=Path, default=None)
     args = parser.parse_args()
+    torch.set_num_threads(args.threads)
     if args.trace is not None:
         html_path = inspect_trace(args.trace, args.output)
     else:
         if args.run_dir is None:
             parser.error("run_dir is required unless --trace is provided")
-        html_path = inspect_game(args.run_dir, args.checkpoint, args.seed, args.game, args.output)
+        html_path = inspect_game(args.run_dir, args.checkpoint, args.seed, args.game, args.output, torch.device(args.device))
     print(f"Wrote {html_path}")
 
 
