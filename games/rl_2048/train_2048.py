@@ -54,23 +54,23 @@ MODEL_CONFIG = ConvActorCriticConfig(
 )
 
 TRAINING_CONFIG = TrainingConfig(
-    run_name="one_hot_noLRfloor_rollout_64x1024_from2000",
+    run_name="one_hot_noLRfloor_rollout_128x1024_no_augmentation",
     learning_rate=3e-4,
     seed=12345,
-    outer_iterations=4000,  # Last outer iteration to run, inclusive.
+    outer_iterations=5000,  # Last outer iteration to run, inclusive.
     warm_start_from=None,
-    num_parallel_games=64,
+    num_parallel_games=128,
     steps_per_game_per_rollout=1024,
-    symmetry_augmentation="step",
+    symmetry_augmentation=None,
     exploration_schedule=NO_UNIFORM_EXPLORATION,
-    evaluation_interval=10,
-    evaluation_games=100,
+    evaluation_interval=50,
+    evaluation_games=500,
     evaluation_seed=67890,
     save_traces=False,
     scheduler_decay=0.999,
     min_learning_rate=None,
-    # Preserve intermediate recovery points during the 4000-iteration run.
-    saved_checkpoints=(500, 1000, 1500, 2000, 2500, 3000, 3500),
+    # Preserve intermediate recovery points every 500 iterations; final.pt saves 5000.
+    saved_checkpoints=(500, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500),
 )
 
 PPO_SETTINGS = {
@@ -83,7 +83,7 @@ PPO_SETTINGS = {
     "max_update_epochs": 8,
     "target_kl": 0.02,
     "max_episode_steps": 2**20,
-    "mini_batch_size": 8192,
+    "mini_batch_size": 16384,
     "reward_multiplier": 0.01,
     "value_transform": "identity",
     "denominator_epsilon": 1e-8,
