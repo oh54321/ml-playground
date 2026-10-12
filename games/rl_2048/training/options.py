@@ -24,6 +24,10 @@ def read_training_options(defaults: TrainingConfig) -> TrainingConfig:
     parser.add_argument("--evaluation-interval", type=int)
     parser.add_argument("--evaluation-games", type=int)
     parser.add_argument(
+        "--compile-model", action="store_true",
+        help="compile separate D4 actor/critic networks on CUDA",
+    )
+    parser.add_argument(
         "--tensorboard",
         action="store_true",
         help="write live scalar metrics for TensorBoard",
@@ -110,5 +114,6 @@ def read_training_options(defaults: TrainingConfig) -> TrainingConfig:
             else args.evaluation_games
         ),
         tensorboard=defaults.tensorboard or args.tensorboard,
+        compile_model=defaults.compile_model or args.compile_model,
         exploration_schedule=schedule,
     )

@@ -125,6 +125,12 @@ def main() -> None:
     )
     saved_checkpoints = set(config.saved_checkpoints) - {run.last_iteration}
 
+    if config.compile_model:
+        if device.type != "cuda":
+            raise RuntimeError("--compile-model requires a CUDA device")
+        model.compile_trunks()
+        print("D4 actor/critic compilation enabled; kernels compile on first use.")
+
     writer = None
     if config.tensorboard:
         try:
