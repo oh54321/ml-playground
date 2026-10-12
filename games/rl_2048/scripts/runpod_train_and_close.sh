@@ -43,8 +43,9 @@ mkdir -p "$ARTIFACT_ROOT/.runpod-launch-failures"
 before_dirs="$(mktemp)"
 after_dirs="$(mktemp)"
 launch_log="$(mktemp)"
+temporary_launch_log="$launch_log"
 cleanup_temps() {
-  rm -f "$before_dirs" "$after_dirs" "$launch_log"
+  rm -f "$before_dirs" "$after_dirs" "$temporary_launch_log"
 }
 trap cleanup_temps EXIT
 
