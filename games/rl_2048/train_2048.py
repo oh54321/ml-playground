@@ -11,9 +11,8 @@ from core.models.conv_actor_critic import (
     NUMERIC_OBSERVATION,
     NUMERIC_ONEHOT_OBSERVATION,
     ConvActorCriticConfig,
+    ConvActorCriticModel,
 )
-from core.models.d4_conv_actor_critic import D4ConvActorCriticModel
-from games.rl_2048.environment.symmetry_2048 import SQUARE_SYMMETRY_SPECS
 from games.rl_2048.training.checkpointing import save_checkpoint
 from games.rl_2048.training.config import NO_UNIFORM_EXPLORATION, TrainingConfig
 from games.rl_2048.training.evaluation_reporting import (
@@ -40,7 +39,7 @@ from games.rl_2048.utils.reporting import (
 # one-plane log2 input. NUMERIC_ONEHOT_OBSERVATION adds categorical planes.
 
 MODEL_CONFIG = ConvActorCriticConfig(
-    n_channels=64,
+    n_channels=32,
     blocks=4,
     height=4,
     width=4,
@@ -54,10 +53,10 @@ MODEL_CONFIG = ConvActorCriticConfig(
 )
 
 TRAINING_CONFIG = TrainingConfig(
-    run_name="one_hot_noLRfloor_rollout_128x1024_no_augmentation",
+    run_name="one_hot_noLRfloor_rollout_128x1024_plain_cnn",
     learning_rate=3e-4,
     seed=12345,
-    outer_iterations=5000,  # Last outer iteration to run, inclusive.
+    outer_iterations=6000,  # Last outer iteration to run, inclusive.
     warm_start_from=None,
     num_parallel_games=128,
     steps_per_game_per_rollout=1024,
@@ -69,8 +68,8 @@ TRAINING_CONFIG = TrainingConfig(
     save_traces=False,
     scheduler_decay=0.999,
     min_learning_rate=None,
-    # Preserve intermediate recovery points every 500 iterations; final.pt saves 5000.
-    saved_checkpoints=(500, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500),
+    # Preserve intermediate recovery points every 500 iterations; final.pt saves 6000.
+    saved_checkpoints=(500, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000, 5500),
 )
 
 PPO_SETTINGS = {
@@ -103,11 +102,7 @@ def main() -> None:
     )
     device = select_device()
     torch.manual_seed(config.seed)
-    action_permutations = {
-        spec.transform: spec.action_permutation
-        for spec in SQUARE_SYMMETRY_SPECS
-    }
-    model = D4ConvActorCriticModel(MODEL_CONFIG, action_permutations).to(device)
+    model = ConvActorCriticModel(MODEL_CONFIG).to(device)
     optimizer = Adam(model.parameters(), lr=config.learning_rate)
     scheduler = FloorExponentialLR(
         optimizer,
@@ -129,7 +124,7 @@ def main() -> None:
         if device.type != "cuda":
             raise RuntimeError("--compile-model requires a CUDA device")
         model.compile_trunks()
-        print("D4 actor/critic compilation enabled; kernels compile on first use.")
+        print("Actor/critic compilation enabled; kernels compile on first use.")
 
     writer = None
     if config.tensorboard:

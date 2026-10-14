@@ -7,7 +7,6 @@ from typing import Iterator, Mapping
 import torch
 from torch import nn
 
-from core.models.actor_critic import ActorCriticOutput
 from core.models.conv_actor_critic import ConvActorCriticModel, ConvActorCriticConfig
 from core.models.d4_layers import (
     D4ActionHead,
@@ -43,32 +42,6 @@ class D4ConvActorCriticModel(ConvActorCriticModel):
             raise ValueError("D4 action mappings must match the configured output size")
         self.__dict__["action_permutations"] = action_permutations
         super().__init__(config)
-
-    def _forward_actor(self, observations: torch.Tensor) -> torch.Tensor:
-        return self.action_head(self.actor_trunk(observations))
-
-    def _forward_critic(self, observations: torch.Tensor) -> torch.Tensor:
-        return self.value_head(self.critic_trunk(observations)).squeeze(-1)
-
-    def forward(self, observations: torch.Tensor) -> ActorCriticOutput:
-        if self.config.shared_trunk:
-            return super().forward(observations)
-        observations = self.encode_observations(observations)
-        return ActorCriticOutput(
-            self._forward_actor(observations), self._forward_critic(observations)
-        )
-
-    def compile_trunks(self) -> None:
-        """Compile independent actor/critic calls without changing checkpoint keys."""
-        if self.config.shared_trunk:
-            raise ValueError("Compilation currently requires separate actor/critic trunks")
-        import torch._functorch.config
-
-        # PPO measures several component gradients from the same retained graph.
-        # Buffer donation would prevent those repeated backward calls in PyTorch 2.8.
-        torch._functorch.config.donated_buffer = False
-        self._forward_actor = torch.compile(self._forward_actor, fullgraph=True)
-        self._forward_critic = torch.compile(self._forward_critic, fullgraph=True)
 
     @contextmanager
     def prepared_inference(self) -> Iterator[None]:

@@ -237,14 +237,35 @@ class ConvActorCriticModel(ActorCriticModel):
     def forward(self, observations: torch.Tensor) -> ActorCriticOutput:
         observations = self.encode_observations(observations)
         if self.config.shared_trunk:
-            policy_features = value_features = self.trunk(observations)
-        else:
-            policy_features = self.actor_trunk(observations)
-            value_features = self.critic_trunk(observations)
+            features = self.trunk(observations)
+            return ActorCriticOutput(
+                action_logits=self.action_head(features),
+                value=self.value_head(features).squeeze(dim=-1),
+            )
         return ActorCriticOutput(
-            action_logits=self.action_head(policy_features),
-            value=self.value_head(value_features).squeeze(dim=-1),
+            action_logits=self._forward_actor(observations),
+            value=self._forward_critic(observations),
         )
+
+    def _forward_actor(self, observations: torch.Tensor) -> torch.Tensor:
+        return self.action_head(self.actor_trunk(observations))
+
+    def _forward_critic(self, observations: torch.Tensor) -> torch.Tensor:
+        return self.value_head(self.critic_trunk(observations)).squeeze(dim=-1)
+
+    def compile_trunks(self) -> None:
+        """Compile actor and critic calls without changing checkpoint keys."""
+        if self.config.shared_trunk:
+            raise ValueError(
+                "Compilation currently requires separate actor/critic trunks"
+            )
+        import torch._functorch.config
+
+        # PPO measures several component gradients from the same retained graph.
+        # Buffer donation would prevent those repeated backward calls in PyTorch 2.8.
+        torch._functorch.config.donated_buffer = False
+        self._forward_actor = torch.compile(self._forward_actor, fullgraph=True)
+        self._forward_critic = torch.compile(self._forward_critic, fullgraph=True)
 
     def encode_observations(self, observations: torch.Tensor) -> torch.Tensor:
         """Expand the stable one-plane log2 input for categorical experiments."""

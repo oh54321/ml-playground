@@ -25,7 +25,7 @@ def read_training_options(defaults: TrainingConfig) -> TrainingConfig:
     parser.add_argument("--evaluation-games", type=int)
     parser.add_argument(
         "--compile-model", action="store_true",
-        help="compile separate D4 actor/critic networks on CUDA",
+        help="compile separate actor/critic networks on CUDA",
     )
     parser.add_argument(
         "--tensorboard",
