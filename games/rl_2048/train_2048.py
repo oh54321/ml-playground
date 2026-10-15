@@ -11,8 +11,9 @@ from core.models.conv_actor_critic import (
     NUMERIC_OBSERVATION,
     NUMERIC_ONEHOT_OBSERVATION,
     ConvActorCriticConfig,
-    ConvActorCriticModel,
 )
+from core.models.d4_conv_actor_critic import D4ConvActorCriticModel
+from games.rl_2048.environment.symmetry_2048 import SQUARE_SYMMETRY_SPECS
 from games.rl_2048.training.checkpointing import save_checkpoint
 from games.rl_2048.training.config import NO_UNIFORM_EXPLORATION, TrainingConfig
 from games.rl_2048.training.evaluation_reporting import (
@@ -39,7 +40,7 @@ from games.rl_2048.utils.reporting import (
 # one-plane log2 input. NUMERIC_ONEHOT_OBSERVATION adds categorical planes.
 
 MODEL_CONFIG = ConvActorCriticConfig(
-    n_channels=32,
+    n_channels=64,
     blocks=4,
     height=4,
     width=4,
@@ -49,11 +50,11 @@ MODEL_CONFIG = ConvActorCriticConfig(
     block_layers=2,
     include_groupnorm=True,
     shared_trunk=False,
-    observation_encoding=NUMERIC_ONEHOT_OBSERVATION,
+    observation_encoding=NUMERIC_OBSERVATION,
 )
 
 TRAINING_CONFIG = TrainingConfig(
-    run_name="one_hot_noLRfloor_rollout_128x1024_plain_cnn",
+    run_name="numeric_noLRfloor_rollout_128x1024_d4_no_augmentation",
     learning_rate=3e-4,
     seed=12345,
     outer_iterations=6000,  # Last outer iteration to run, inclusive.
@@ -102,7 +103,11 @@ def main() -> None:
     )
     device = select_device()
     torch.manual_seed(config.seed)
-    model = ConvActorCriticModel(MODEL_CONFIG).to(device)
+    action_permutations = {
+        spec.transform: spec.action_permutation
+        for spec in SQUARE_SYMMETRY_SPECS
+    }
+    model = D4ConvActorCriticModel(MODEL_CONFIG, action_permutations).to(device)
     optimizer = Adam(model.parameters(), lr=config.learning_rate)
     scheduler = FloorExponentialLR(
         optimizer,
