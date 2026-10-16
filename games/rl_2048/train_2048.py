@@ -1,6 +1,7 @@
 """Train a 2048 agent with PPO."""
 
 from dataclasses import asdict
+from pathlib import Path
 from time import perf_counter
 
 import torch
@@ -50,15 +51,17 @@ MODEL_CONFIG = ConvActorCriticConfig(
     block_layers=2,
     include_groupnorm=True,
     shared_trunk=False,
-    observation_encoding=NUMERIC_OBSERVATION,
+    observation_encoding=NUMERIC_ONEHOT_OBSERVATION,
 )
 
 TRAINING_CONFIG = TrainingConfig(
-    run_name="numeric_noLRfloor_rollout_128x1024_d4_no_augmentation",
+    run_name="one_hot_constantLR_rollout_128x1024_from6000",
     learning_rate=3e-4,
     seed=12345,
-    outer_iterations=6000,  # Last outer iteration to run, inclusive.
-    warm_start_from=None,
+    outer_iterations=8000,  # Last outer iteration to run, inclusive.
+    warm_start_from=Path(
+        "artifacts/ppo_2048/one_hot_noLRfloor_rollout_128x1024_no_augmentation_20261013_162929_302742/final.pt"
+    ),
     num_parallel_games=128,
     steps_per_game_per_rollout=1024,
     symmetry_augmentation=None,
@@ -67,10 +70,11 @@ TRAINING_CONFIG = TrainingConfig(
     evaluation_games=500,
     evaluation_seed=67890,
     save_traces=False,
-    scheduler_decay=0.999,
+    # A decay of 1.0 keeps the restored checkpoint learning rate unchanged.
+    scheduler_decay=1.0,
     min_learning_rate=None,
-    # Preserve intermediate recovery points every 500 iterations; final.pt saves 6000.
-    saved_checkpoints=(500, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000, 5500),
+    # Preserve continuation recovery points every 500 iterations; final.pt saves 8000.
+    saved_checkpoints=(6500, 7000, 7500),
 )
 
 PPO_SETTINGS = {
