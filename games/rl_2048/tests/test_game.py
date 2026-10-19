@@ -7,6 +7,8 @@ import torch
 
 from games.rl_2048.environment.game_2048 import Game2048, ObservationEncoding, State2048
 from games.rl_2048.environment._game_2048_kernels import move_int64
+from core.symmetries.d4_transforms import transform_array
+from games.rl_2048.environment.symmetry_2048 import RECTANGULAR_SYMMETRY_SPECS, SQUARE_SYMMETRY_SPECS
 
 
 class GameTests(unittest.TestCase):
@@ -113,3 +115,16 @@ class GameTests(unittest.TestCase):
             State2048.batch_to_tensor([State2048(), State2048(observation_encoding="numeric_onehot")])
         with self.assertRaises(ValueError):
             State2048(np.full((4, 4), 2 ** 18), "numeric_onehot").to_tensor()
+
+    def test_symmetry_action_mappings_preserve_moves(self):
+        board = np.array([[2, 2, 0, 4], [0, 8, 8, 0], [2, 0, 4, 4], [0, 2, 0, 8]])
+        for board, specs in ((board, SQUARE_SYMMETRY_SPECS),
+                             (board[:3], RECTANGULAR_SYMMETRY_SPECS)):
+            for spec in specs:
+                transformed = transform_array(board, spec.transform)
+                self.assertEqual(transformed.shape, board.shape)
+                for action in range(4):
+                    expected, actual = np.zeros_like(board), np.zeros_like(board)
+                    reward, moved = move_int64(board, action, expected)
+                    self.assertEqual(move_int64(transformed, spec.action_permutation[action], actual), (reward, moved))
+                    np.testing.assert_array_equal(actual, transform_array(expected, spec.transform))

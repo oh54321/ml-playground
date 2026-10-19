@@ -76,7 +76,7 @@ class ConvActorCriticModel(ActorCriticModel):
 
     def __init__(self, config: ConvActorCriticConfig):
         super().__init__()
-        if config.n_channels % 4 or config.head_channels % 4:
+        if self.architecture == "cnn" and (config.n_channels % 4 or config.head_channels % 4):
             raise ValueError("CNN trunk and head channels must be divisible by 4")
         self.config = config
         self.actor_trunk = self.create_trunk()

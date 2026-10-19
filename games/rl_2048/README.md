@@ -54,4 +54,14 @@ game = Game2048(seed=123, observation_encoding=encoding)
 output = model(game.state.to_tensor().unsqueeze(0))
 ```
 
-The CNN accepts rectangular observations and any positive action count.
+The D4 model ties weights across rotations and reflections: these transforms
+permute the policy's actions and leave its value prediction unchanged. It uses
+the same configuration interface, whose default width is 64 channels. Both models
+support either encoding. The CNN supports rectangular observations;
+D4 requires square observations and a supplied transitive D4 action mapping.
+2048’s four-direction mappings are defined in `environment/symmetry_2048.py`.
+
+Both models use the same kernel-size and block-layer settings, defaulting to
+3×3 convolutions and two layers per residual block. D4 reuses expanded weights during inference and clears them before
+training updates. Optional compilation preserves the model's parameters and
+state dictionary.
