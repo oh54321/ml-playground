@@ -18,11 +18,13 @@ class TrainingConfig:
     scheduler_decay_until: int | None
     seed: int
     outer_iterations: int
+    warm_start_from: Path | None
     num_parallel_games: int
     steps_per_game_per_rollout: int
     evaluation_interval: int
     evaluation_games: int
     evaluation_seed: int
+    checkpoint_interval: int
     tensorboard: bool
     compile_model: bool
 
@@ -43,5 +45,5 @@ class TrainingConfig:
         if self.scheduler_decay_until is not None and self.scheduler_decay_until < 0:
             raise ValueError("scheduler_decay_until must be nonnegative or None")
         if min(self.outer_iterations, self.num_parallel_games, self.steps_per_game_per_rollout,
-               self.evaluation_interval, self.evaluation_games) <= 0:
+               self.evaluation_interval, self.evaluation_games, self.checkpoint_interval) <= 0:
             raise ValueError("Iteration counts, intervals, and game counts must be positive")

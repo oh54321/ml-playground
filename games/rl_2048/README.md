@@ -133,7 +133,7 @@ and `PPO_SETTINGS` for the algorithm. `DEVICE = None` selects hardware automatic
 Command-line options override those values for a single run. `training/config.py`
 defines and validates the training fields; it contains no experiment defaults.
 Architecture and observation encoding are
-recorded in each run configuration. CPU, CUDA, and MPS are supported. Device selection
+recorded in each run configuration and checkpoint. CPU, CUDA, and MPS are supported. Device selection
 prefers CUDA, then MPS, then CPU; use `--device` to choose explicitly. On CUDA,
 `--compile-model` optionally compiles actor and critic calls on first use.
 
@@ -146,3 +146,35 @@ python -m pip install tensorboard
 python -m games.rl_2048.train_2048 --tensorboard
 tensorboard --logdir artifacts/ppo_2048
 ```
+
+## Checkpoints
+
+Each run saves `latest.pt` at evaluation intervals and `best.pt` when its mean
+evaluation score improves. `checkpoint_0500.pt`, `checkpoint_1000.pt`, etc. are
+periodic recovery points; `--checkpoint-interval` changes their spacing.
+`final.pt` is written after the requested training iterations finish. Best-model
+selection is local to each run directory.
+
+Continue a saved run by repeating its model, PPO, and schedule options:
+
+```sh
+python -m games.rl_2048.train_2048 \
+  --warm-start-from artifacts/ppo_2048/<run>/latest.pt --outer-iterations 12000
+```
+
+For a CNN or numeric-only run, repeat its `--architecture`,
+`--observation-encoding`, and any custom `--channels`, `--kernel-size`, or
+`--block-layers` settings. Model and PPO
+configuration must match the checkpoint, including board dimensions and rollout
+sizes. Repeat `--height` and `--width` when resuming a non-default board. Recovery
+restores model weights, Adam state, the current learning rate, scheduler counters,
+and the completed iteration. Repeat `--scheduler-decay` and
+`--scheduler-decay-until` from the saved run configuration to preserve its schedule.
+The cutoff uses the absolute iteration number, so the default schedule stays
+constant after iteration 6,000, including across restarts. To intentionally stop
+decay earlier, use `--scheduler-decay 1.0`; it holds the restored rate constant.
+
+`--outer-iterations` is the final iteration number, not an additional count.
+Rollout games and random streams restart, so this is a warm start rather than an
+exact continuation. Only checkpoints produced by this clean implementation are
+supported. On interruption, resume from the most recent saved checkpoint.

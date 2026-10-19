@@ -17,6 +17,7 @@ from core.models.conv_actor_critic import ConvActorCriticConfig, ConvActorCritic
 from core.models.d4_conv_actor_critic import D4ConvActorCriticModel
 from games.rl_2048.environment.game_2048 import Game2048, ObservationEncoding
 from games.rl_2048.environment.symmetry_2048 import SQUARE_SYMMETRY_SPECS
+from games.rl_2048.training.checkpointing import save_checkpoint, warm_start_from_checkpoint
 from games.rl_2048.training.config import TrainingConfig
 from games.rl_2048.training.evaluation import evaluate_games
 
@@ -33,11 +34,13 @@ TRAINING_CONFIG = TrainingConfig(
     scheduler_decay_until=6000,  # Decay through this iteration, then hold the rate.
     seed=12345,
     outer_iterations=10000,
+    warm_start_from=None,
     num_parallel_games=128,
     steps_per_game_per_rollout=1024,
     evaluation_interval=50,
     evaluation_games=500,
     evaluation_seed=67890,
+    checkpoint_interval=500,
     tensorboard=False,
     compile_model=False,
 )
@@ -71,6 +74,7 @@ PPO_SETTINGS = {
 def read_config() -> tuple[TrainingConfig, ConvActorCriticConfig, PPOConfig, str]:
     # Optional command-line arguments override the experiment settings above.
     parser = argparse.ArgumentParser(description="Train the 2048 PPO agent")
+    parser.add_argument("--warm-start-from", type=Path)
     parser.add_argument("--architecture", choices=("cnn", "d4"))
     parser.add_argument("--observation-encoding", choices=("numeric", "numeric_onehot"))
     parser.add_argument("--channels", type=int)
@@ -80,7 +84,7 @@ def read_config() -> tuple[TrainingConfig, ConvActorCriticConfig, PPOConfig, str
     parser.add_argument("--scheduler-decay-until", type=int,
                         help="last iteration to decay the learning rate, inclusive")
     for name in ("height", "width", "outer-iterations", "num-parallel-games", "steps-per-game-per-rollout",
-                 "evaluation-interval", "evaluation-games"):
+                 "evaluation-interval", "evaluation-games", "checkpoint-interval"):
         parser.add_argument(f"--{name}", type=int)
     parser.add_argument("--tensorboard", action="store_true", default=None)
     parser.add_argument("--compile-model", action="store_true", default=None,
@@ -157,6 +161,14 @@ def main() -> None:
     model = model.to(device)
     optimizer = Adam(model.parameters(), lr=config.learning_rate)
     scheduler = ExponentialLR(optimizer, gamma=config.scheduler_decay)
+    first_iteration = 1
+    if config.warm_start_from is not None:
+        first_iteration = warm_start_from_checkpoint(
+            config.warm_start_from, model, optimizer, scheduler, ppo_config,
+            observation_encoding=config.observation_encoding,
+        )
+    if first_iteration > config.outer_iterations:
+        raise ValueError("Checkpoint has already completed the requested iterations")
     if config.compile_model:
         model.compile_trunks()
         print("Actor/critic compilation enabled; kernels compile on first use.", flush=True)
@@ -169,9 +181,10 @@ def main() -> None:
     if config.tensorboard:
         from torch.utils.tensorboard import SummaryWriter
         writer = SummaryWriter(log_dir=output / "tensorboard", flush_secs=5)
+    best_score = float("-inf")
     try:
         with (output / "metrics.jsonl").open("a") as metrics_file:
-            for iteration in range(1, config.outer_iterations + 1):
+            for iteration in range(first_iteration, config.outer_iterations + 1):
                 started = perf_counter()
                 epochs = ppo.run_outer_iteration()
                 if config.scheduler_decay_until is None or iteration <= config.scheduler_decay_until:
@@ -189,10 +202,21 @@ def main() -> None:
                        observation_encoding=config.observation_encoding)
                     metrics.update({f"evaluation/{key}": value for key, value in results.metrics().items()})
                     (output / f"evaluation_{iteration:04d}.json").write_text(json.dumps(asdict(results)) + "\n")
+                    save_checkpoint(output / "latest.pt", model, optimizer, scheduler, ppo_config, iteration,
+                                    observation_encoding=config.observation_encoding)
+                    if metrics["evaluation/mean_score"] > best_score:
+                        best_score = metrics["evaluation/mean_score"]
+                        save_checkpoint(output / "best.pt", model, optimizer, scheduler, ppo_config, iteration,
+                                        observation_encoding=config.observation_encoding)
+                if iteration % config.checkpoint_interval == 0:
+                    save_checkpoint(output / f"checkpoint_{iteration:04d}.pt", model, optimizer, scheduler, ppo_config, iteration,
+                                    observation_encoding=config.observation_encoding)
                 metrics["training/iteration_seconds"] = perf_counter() - started
                 log_iteration(metrics, metrics_file, writer)
+        save_checkpoint(output / "final.pt", model, optimizer, scheduler, ppo_config, config.outer_iterations,
+                        observation_encoding=config.observation_encoding)
     except KeyboardInterrupt:
-        print("Interrupted.")
+        print("Interrupted; warm-start from the most recent saved checkpoint.")
     finally:
         if writer is not None:
             writer.close()
