@@ -65,3 +65,17 @@ Both models use the same kernel-size and block-layer settings, defaulting to
 3×3 convolutions and two layers per residual block. D4 reuses expanded weights during inference and clears them before
 training updates. Optional compilation preserves the model's parameters and
 state dictionary.
+
+## PPO
+
+`algorithms/` collects rollouts, computes generalized advantage estimates, and
+optimizes the clipped policy loss with a value loss and entropy regularization.
+Illegal actions are masked during collection and updates. Terminal states stop
+bootstrapping; time limits and rollout boundaries bootstrap from the next state.
+Rollouts use the original board orientation for both architectures.
+
+`PPO.run_outer_iteration()` collects one rollout and applies minibatch updates.
+KL-based stopping is checked after each completed epoch, once
+`min_update_epochs` have finished. Setting it to 2 guarantees at least two epochs;
+`max_update_epochs` bounds the total. Rollout tensors are prepared once and reused
+across update epochs.
