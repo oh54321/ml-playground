@@ -27,3 +27,31 @@ Run the tests from the repository root:
 ```sh
 python -m unittest discover -s games/rl_2048/tests -v
 ```
+
+## Model
+
+The generic models live in `core/models/` and accept already-encoded tensors
+with explicit input channels, spatial dimensions, and action counts. The 2048
+state owns tile encoding; callers derive the model input channels from that
+choice, as shown below.
+
+The CNN defaults to separate policy and value trunks with four residual blocks,
+64 channels, GroupNorm, and 32-channel heads. The example below chooses 32 trunk
+channels. Both observation encodings use the same model interface. `ConvActorCriticConfig` accepts `kernel_size`
+(positive and odd, default 3) and `block_layers` (positive, default 2).
+The kernel size applies to the stem and residual convolutions. GroupNorm is
+always enabled, and policy and value trunks remain separate.
+
+```python
+from core.models.conv_actor_critic import ConvActorCriticConfig, ConvActorCriticModel
+from games.rl_2048.environment.game_2048 import Game2048, ObservationEncoding
+
+encoding = ObservationEncoding.NUMERIC_ONEHOT
+config = ConvActorCriticConfig(in_channels=encoding.in_channels(4, 4),
+                              height=4, width=4, output_dim=4, n_channels=32)
+model = ConvActorCriticModel(config)
+game = Game2048(seed=123, observation_encoding=encoding)
+output = model(game.state.to_tensor().unsqueeze(0))
+```
+
+The CNN accepts rectangular observations and any positive action count.
