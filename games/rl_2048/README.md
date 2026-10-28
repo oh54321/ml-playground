@@ -178,3 +178,32 @@ decay earlier, use `--scheduler-decay 1.0`; it holds the restored rate constant.
 Rollout games and random streams restart, so this is a warm start rather than an
 exact continuation. Only checkpoints produced by this clean implementation are
 supported. On interruption, resume from the most recent saved checkpoint.
+
+## Run the demo locally
+
+```sh
+python -m games.rl_2048.demo --checkpoint artifacts/ppo_2048/<run>/best.pt
+```
+
+Open the address printed by the command. Play with arrow keys, WASD, swipe gestures, or
+direction buttons. **Play model** lets the policy take over; **Pause model** and
+**One step** let you inspect its decisions. Manual keyboard input pauses autoplay.
+**New game** uses a fresh random seed. The speed slider sets a target of up to
+50 moves per second; inference and rendering can limit the actual rate.
+The latest move stays visible during autoplay, and **Move history** lists the
+current game's moves and score gains. Click an entry (including **Starting board**)
+to pause and view its board and score. **Return to live game** restores the current
+board; browsing history never rewinds the game. Snapshots stay in memory until
+**New game** or a server restart. Each move shows the merged board before
+the new tile appears; the animation shortens at higher speeds and respects
+your browser's reduced-motion setting.
+
+The demo loads the architecture, board dimensions, observation encoding, and weights
+from a clean training checkpoint. It uses CPU inference and greedily chooses the
+highest-scoring legal action, just like evaluation. CNN and D4 checkpoints with
+either encoding work without changing the demo code. It does not train or modify
+the checkpoint.
+
+Omit `--checkpoint` to play manually, or use `--port 8001` if port 8000 is occupied.
+The server listens only on your computer and keeps one game in memory, shared
+across its browser tabs. Restarting the server resets it. Stop with Ctrl+C.
