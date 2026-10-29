@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f6f3ed">
+  <title>2048 · Play and watch</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" type="module"></script>
+</head>
+<body>
+  <main class="game">
+    <header class="heading">
+      <div>
+        <p class="eyebrow">Play and watch</p>
+        <h1>2048<span class="title-dot">.</span></h1>
+        <p class="intro">Join matching tiles. See how far you or the model can go.</p>
+      </div>
+      <button id="new-game" class="button button-dark" type="button">New game</button>
+    </header>
+
+    <section class="stats" aria-label="Game statistics">
+      <div class="stat"><span class="stat-label">Score</span><strong id="score">0</strong></div>
+      <div class="stat"><span class="stat-label">Moves</span><strong id="moves">0</strong></div>
+      <div class="stat"><span class="stat-label">Top tile</span><strong id="top-tile">—</strong></div>
+    </section>
+
+    <section class="play-area" aria-label="2048 game">
+      <div id="board" class="board" role="grid" aria-label="2048 board" tabindex="0"></div>
+      <p id="status" class="status" role="status" aria-live="polite">Loading game…</p>
+      <button id="return-live" class="button button-light" type="button" hidden>Return to live game</button>
+      <p id="error" class="error" role="alert" hidden></p>
+    </section>
+
+    <section class="controls" aria-label="Game controls">
+      <div class="control-head">
+        <div>
+          <h2>Your turn</h2>
+          <p>Use arrow keys, WASD, swipe, or the buttons.</p>
+        </div>
+        <div class="directions" aria-label="Move direction">
+          <button type="button" data-action="1" aria-label="Move up">↑</button>
+          <button type="button" data-action="0" aria-label="Move left">←</button>
+          <button type="button" data-action="3" aria-label="Move down">↓</button>
+          <button type="button" data-action="2" aria-label="Move right">→</button>
+        </div>
+      </div>
+      <div class="divider"></div>
+      <div class="model-head">
+        <div>
+          <h2>Let the model play</h2>
+          <p id="model-info">Checking for a model…</p>
+        </div>
+        <div class="model-buttons">
+          <button id="play-pause" class="button button-accent" type="button" disabled>Play model</button>
+          <button id="step" class="button button-light" type="button" disabled>One step</button>
+        </div>
+      </div>
+      <label class="speed-label" for="speed">Speed <strong id="speed-value">5 moves/sec</strong></label>
+      <input id="speed" type="range" min="1" max="50" value="5" disabled>
+      <details id="history-panel" class="history-panel">
+        <summary>Move history <span id="history-count">0 moves</span></summary>
+        <ol id="history-list" class="history-list" aria-label="Moves, latest first"></ol>
+      </details>
+    </section>
+    <p class="footer-note">Use the arrow keys to take over from the model during live play.</p>
+  </main>
+</body>
+</html>
