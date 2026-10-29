@@ -1,3 +1,5 @@
+import { backend } from "./backend.js";
+
 const board = document.querySelector("#board");
 const score = document.querySelector("#score");
 const moves = document.querySelector("#moves");
@@ -32,6 +34,7 @@ let pending = null;
 let playing = false;
 let autoTimer = null;
 let lastStarted = 0;
+let refreshNeeded = false;
 
 function stopAuto() {
   playing = false;
@@ -54,7 +57,9 @@ function renderControls() {
   stepButton.disabled = !hasModel;
   speed.disabled = !hasModel;
   modelInfo.hidden = ready && game.has_model;
-  if (ready && !game.has_model) modelInfo.textContent = "No model loaded. You can still play.";
+  if (ready && !game.has_model) {
+    modelInfo.textContent = game.model_message || "No model loaded. You can still play.";
+  }
 }
 
 function renderStatus() {
@@ -160,16 +165,12 @@ function renderState() {
 
 function showError(cause) {
   stopAuto();
-  error.textContent = cause instanceof Error ? cause.message : "Could not reach the game server.";
+  error.textContent = cause instanceof Error ? cause.message : "Could not update the game.";
   error.hidden = false;
 }
 
-async function api(path, body) {
-  const response = await fetch(path, body === undefined ? undefined : {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-  });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
+async function request(operation) {
+  const data = await operation();
   error.hidden = true;
   return data;
 }
@@ -251,7 +252,7 @@ async function pump() {
     lastStarted = performance.now();
     try {
       if (command.type === "view") {
-        const snapshot = await api(`/api/history/${command.gameId}/${command.number}`);
+        const snapshot = await request(() => backend.snapshot(command.gameId, command.number));
         if (selectedMove === command.number && game.game_id === snapshot.game_id) {
           preview = snapshot;
           showBoard(preview.board);
@@ -262,14 +263,13 @@ async function pump() {
       if (command.type === "live") {
         selectedMove = null;
         preview = null;
-        await receiveState(await api("/api/state"), false);
+        await receiveState(await request(() => backend.state()), false);
         renderHistory();
         return;
       }
-      const path = command.type === "new" ? "/api/new"
-        : command.type === "move" ? "/api/move" : "/api/step";
-      const body = command.type === "move" ? { action: command.action } : {};
-      await receiveState(await api(path, body));
+      const operation = command.type === "new" ? () => backend.newGame()
+        : command.type === "move" ? () => backend.move(command.action) : () => backend.step();
+      await receiveState(await request(operation));
       if (command.type === "new") lastStarted = 0;
     } catch (cause) { showError(cause); }
     finally { working = false; pump(); }
@@ -279,7 +279,7 @@ async function pump() {
     historyNeeded = false;
     working = true;
     try {
-      const data = await api("/api/history");
+      const data = await request(() => backend.history());
       if (pending?.type !== "new") {
         await receiveState(data.state, false);
         history = data.history;
@@ -288,6 +288,14 @@ async function pump() {
         renderHistory();
       }
     } catch (cause) { historyNeeded = false; showError(cause); }
+    finally { working = false; pump(); }
+    return;
+  }
+  if (refreshNeeded) {
+    refreshNeeded = false;
+    working = true;
+    try { await receiveState(await request(() => backend.state()), false); }
+    catch (cause) { showError(cause); }
     finally { working = false; pump(); }
     return;
   }
@@ -353,7 +361,14 @@ board.addEventListener("touchend", (event) => {
 
 renderControls();
 (async () => {
-  try { await receiveState(await api("/api/state")); }
+  try { await receiveState(await request(() => backend.state())); }
   catch (cause) { showError(cause); }
   finally { working = false; pump(); }
+  if (backend.ready) {
+    try {
+      await backend.ready();
+      refreshNeeded = true;
+      pump();
+    } catch (cause) { showError(cause); }
+  }
 })();

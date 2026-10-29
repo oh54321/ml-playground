@@ -1,0 +1,8 @@
+{
+  "height": 4,
+  "width": 4,
+  "in_channels": 19,
+  "observation_encoding": "numeric_onehot",
+  "architecture": "d4",
+  "checkpoint_sha256": "75b387dc40ad593a13a2144d01c1e4147871843edcdcc492107a4124bd8a5472"
+}

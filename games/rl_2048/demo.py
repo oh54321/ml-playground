@@ -149,7 +149,9 @@ class DemoHandler(BaseHTTPRequestHandler):
             return
         assets = {"/": ("index.html", "text/html; charset=utf-8"),
                   "/style.css": ("style.css", "text/css; charset=utf-8"),
-                  "/app.js": ("app.js", "text/javascript; charset=utf-8")}
+                  "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+                  # The static site uses browser inference; local play uses this HTTP adapter.
+                  "/backend.js": ("server_backend.js", "text/javascript; charset=utf-8")}
         if path not in assets:
             self.json_reply({"error": "Not found"}, 404)
             return

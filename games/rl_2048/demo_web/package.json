@@ -1,0 +1,12 @@
+{
+  "name": "ppo-2048-demo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test ../tests/test_browser_game.mjs"
+  },
+  "dependencies": {
+    "onnxruntime-web": "1.31.1"
+  }
+}

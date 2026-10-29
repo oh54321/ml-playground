@@ -4,3 +4,5 @@ __pycache__/
 .vscode/
 .venv/
 artifacts/
+node_modules/
+games/rl_2048/demo_web/dist/

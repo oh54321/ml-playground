@@ -207,3 +207,50 @@ the checkpoint.
 Omit `--checkpoint` to play manually, or use `--port 8001` if port 8000 is occupied.
 The server listens only on your computer and keeps one game in memory, shared
 across its browser tabs. Restarting the server resets it. Stop with Ctrl+C.
+
+## Host the demo on GitHub Pages
+
+The static demo runs the game and model entirely in the visitor's browser using
+ONNX Runtime Web. It needs no inference server. The included `demo_web/policy.onnx`
+is an actor-only export of the saved best D4 numeric-plus-one-hot policy (about
+2.3 MB); `model.json` records its board settings and checkpoint checksum. The
+critic, optimizer, and training artifacts are not published. Each browser tab has
+its own random game and move history; refreshing the page resets it.
+
+Build and preview with Node.js 22 and any static HTTP server:
+
+```sh
+npm --prefix games/rl_2048/demo_web ci --ignore-scripts
+npm --prefix games/rl_2048/demo_web test
+npm --prefix games/rl_2048/demo_web run build
+python -m http.server 8001 --bind 127.0.0.1 --directory games/rl_2048/demo_web/dist
+```
+
+Open the server's address in your browser. Serve `dist/`, rather than opening the
+HTML file directly. The build includes the pinned runtime, its WebAssembly files,
+and license notices; the deployed page makes no requests to an inference service
+or external CDN. Model loading can take a moment, and speed depends on the
+visitor's device. Manual play remains available if the model cannot load.
+
+To publish, choose **Settings → Pages → Source → GitHub Actions** in the repository.
+The workflow in `.github/workflows/demo-pages.yml` builds and deploys on pushes to
+`rwu/ppo-2048` that change the demo, its browser tests, or the workflow. Allow that
+branch in the `github-pages` environment's deployment rules if necessary. Change
+the workflow's branch filter when moving the demo to another branch. GitHub shows
+the published URL in the deployment; relative asset paths support repository
+sites such as `/<repository>/`. The local Python demo remains available with the
+same interface and controls.
+
+To replace the browser policy, install the optional export dependencies in a
+Python 3.11+ environment and export a clean checkpoint:
+
+```sh
+python -m pip install -r games/rl_2048/requirements-demo-export.txt
+python -m games.rl_2048.export_policy artifacts/ppo_2048/<run>/best.pt
+```
+
+The exporter supports CNN and D4 with either observation encoding. It checks the
+exported logits and legal action choices against PyTorch on 128 boards before
+replacing `policy.onnx` and `model.json`. Rebuild the site after exporting. The
+browser and local demos share `app.js`; `backend.js` runs browser inference, while
+the Python server serves `server_backend.js` as its HTTP adapter.
